@@ -17,11 +17,15 @@ type Client struct {
 	DocumentRoot string
 }
 
-func GetClient(documentRoot string) *Client {
-	var client Client = Client{
+var client Client 
+
+func InitClient(documentRoot string) {
+	client = Client{
 		DocumentRoot: documentRoot,
 	}
+}
 
+func GetClient() *Client {
 	return &client
 }
 

@@ -164,6 +164,10 @@ func createDirIfNotExist(path string) error {
 	return nil
 }
 
+func (c *Client) FlushAll() error {
+	return os.RemoveAll(c.DocumentRoot)
+}
+
 /********************************************************************************
 * H A S H I N G 																*
 *********************************************************************************/

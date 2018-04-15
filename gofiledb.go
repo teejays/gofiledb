@@ -33,14 +33,6 @@ func GetClient() *Client {
 	return &client
 }
 
-func (c *Client) SetDocumentRoot(documentRoot string) error {
-	if c == nil {
-		return fmt.Errorf("[GoFiledb] Panic: Tried to set DocumentRoot of a nil client.")
-	}
-	client.DocumentRoot = documentRoot
-	return nil
-}
-
 /********************************************************************************
 * W R I T E 																		*
 *********************************************************************************/
@@ -51,12 +43,12 @@ func (c *Client) Set(path string, key string, data []byte) error {
 
 	err := createDirIfNotExist(folderPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while creating the folder path: %v", err)
 	}
 
 	err = ioutil.WriteFile(c.fullFilePath(path, key), data, 0666)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while writing file: %v", err)
 	}
 
 	return nil
@@ -64,7 +56,7 @@ func (c *Client) Set(path string, key string, data []byte) error {
 
 func (c *Client) SetStruct(path string, key string, v interface{}) error {
 	if v == nil {
-		return errors.New(fmt.Sprintf("[nxjfsdb] The value provided by key %s is nil. Cannot store.", key))
+		return errors.New(fmt.Sprintf("[GoFiledb] The value provided by key %s is nil. Cannot store.", key))
 	}
 
 	b, err := json.Marshal(v)

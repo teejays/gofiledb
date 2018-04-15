@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"strconv"
 )
@@ -17,7 +18,7 @@ type Client struct {
 	DocumentRoot string
 }
 
-var client Client 
+var client Client
 
 func InitClient(documentRoot string) {
 	client = Client{
@@ -26,11 +27,14 @@ func InitClient(documentRoot string) {
 }
 
 func GetClient() *Client {
+	if client.DocumentRoot == "" {
+		log.Fatal("[GoFiledb] GetClient called without initializing the client")
+	}
 	return &client
 }
 
-func (client *Client) SetDocumentRoot(documentRoot string) error {
-	if client == nil {
+func (c *Client) SetDocumentRoot(documentRoot string) error {
+	if c == nil {
 		return fmt.Errorf("[GoFiledb] Panic: Tried to set DocumentRoot of a nil client.")
 	}
 	client.DocumentRoot = documentRoot
@@ -41,28 +45,16 @@ func (client *Client) SetDocumentRoot(documentRoot string) error {
 * W R I T E 																		*
 *********************************************************************************/
 
-func (client *Client) SetStruct(key string, v interface{}, path string) error {
-	if v == nil {
-		return errors.New(fmt.Sprintf("[nxjfsdb] The value provided by key %s is nil. Cannot store.", key))
-	}
+func (c *Client) Set(path string, key string, data []byte) error {
 
-	valueJson, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return client.Set(key, valueJson, path)
-}
-
-func (client *Client) Set(key string, data []byte, path string) error {
-
-	var folderPath string = client.getFullFolderPath(key, path)
+	var folderPath string = c.fullDirPath(path, key)
 
 	err := createDirIfNotExist(folderPath)
 	if err != nil {
 		return err
 	}
 
-	err = ioutil.WriteFile(folderPath+key, data, 0666)
+	err = ioutil.WriteFile(c.fullFilePath(path, key), data, 0666)
 	if err != nil {
 		return err
 	}
@@ -70,17 +62,27 @@ func (client *Client) Set(key string, data []byte, path string) error {
 	return nil
 }
 
+func (c *Client) SetStruct(path string, key string, v interface{}) error {
+	if v == nil {
+		return errors.New(fmt.Sprintf("[nxjfsdb] The value provided by key %s is nil. Cannot store.", key))
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return c.Set(path, key, b)
+}
+
 /********************************************************************************
 * R E A D 																		*
 *********************************************************************************/
 
-func (client *Client) Get(key string, path string) ([]byte, error) {
-
-	var fullPath string = client.getFullFolderPath(key, path) + key
+func (c *Client) Get(path string, key string) ([]byte, error) {
 
 	buf := bytes.NewBuffer(nil)
 
-	file, err := os.Open(fullPath)
+	file, err := os.Open(c.fullFilePath(path, key))
 	if err != nil {
 		return nil, err
 	}
@@ -93,9 +95,9 @@ func (client *Client) Get(key string, path string) ([]byte, error) {
 
 }
 
-func (client *Client) GetStruct(key string, v interface{}, path string) error {
+func (c *Client) GetStruct(path string, key string, v interface{}) error {
 
-	bytes, err := client.Get(key, path)
+	bytes, err := c.Get(path, key)
 	if err != nil {
 		return err
 	}
@@ -108,9 +110,9 @@ func (client *Client) GetStruct(key string, v interface{}, path string) error {
 	return nil
 }
 
-func (client *Client) GetStructIfExists(key string, v interface{}, path string) (bool, error) {
+func (c *Client) GetStructIfExists(path string, key string, v interface{}) (bool, error) {
 
-	bytes, err := client.Get(key, path)
+	bytes, err := c.Get(path, key)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -126,15 +128,15 @@ func (client *Client) GetStructIfExists(key string, v interface{}, path string) 
 	return true, nil
 }
 
-func (client *Client) GetFile(key string, path string) ([]byte, error) {
-	var fullPath string = client.getFullFolderPath(key, path) + key
+func (c *Client) GetFile(path string, key string) ([]byte, error) {
+	var fullPath string = c.fullFilePath(path, key)
 
 	file, err := ioutil.ReadFile(fullPath)
 	return file, err
 }
 
-func (client *Client) GetFileIfExists(key string, path string) ([]byte, error) {
-	file, err := client.GetFile(key, path)
+func (c *Client) GetFileIfExists(key string, path string) ([]byte, error) {
+	file, err := c.GetFile(path, key)
 	if IsNotExist(err) {
 		return nil, nil
 	}
@@ -147,17 +149,22 @@ func (client *Client) GetFileIfExists(key string, path string) ([]byte, error) {
 /********************************************************************************
 * H E L P E R 																	*
 *********************************************************************************/
+
+func (c *Client) fullFilePath(path, key string) string {
+	return c.fullDirPath(path, key) + "/" + key
+}
+
+func (c *Client) fullDirPath(path, key string) string {
+	return c.DocumentRoot + "/" + path + "/" + hashedFolderName(key)
+}
+
 func IsNotExist(err error) bool {
 	return os.IsNotExist(err)
 }
 
-func (client *Client) getFullFolderPath(key, path string) string {
-	return client.DocumentRoot + path + getHashedFolderPath(key)
-}
-
 func createDirIfNotExist(path string) error {
 	if _, _err := os.Stat(path); os.IsNotExist(_err) {
-		err := os.Mkdir(path, os.ModePerm)
+		err := os.MkdirAll(path, os.ModePerm)
 		if err != nil {
 			return nil
 		}
@@ -168,18 +175,19 @@ func createDirIfNotExist(path string) error {
 /********************************************************************************
 * H A S H I N G 																*
 *********************************************************************************/
+// This section is used to spread files across multiple directories (so one folder doesn't end up with too many files).
+var hashModConstant int = 50
 
-func getHashedFolderPath(key string) string {
+func hashedFolderName(key string) string {
 	h := getHash(key)
-	return "partition_" + h + "/"
+	return "partition_" + h
 }
 
 /* This function takes a string, convert each byte to a number representation and adds it, then returns a mod */
 func getHash(str string) string {
-	var mod int = 50
 	var sum int
 	for i := 0; i < len(str); i++ {
 		sum = int(str[i])
 	}
-	return strconv.Itoa(sum % mod)
+	return strconv.Itoa(sum % hashModConstant)
 }

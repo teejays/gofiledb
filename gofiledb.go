@@ -1,3 +1,5 @@
+// gofiledb package provides an interface between Go applications and the linux-based file system
+// so that the filesystem can be used as a database or a caching layer.
 package gofiledb
 
 import (
@@ -12,20 +14,23 @@ import (
 	"strconv"
 )
 
-// DocumentRoot is the absolute path to the directory that can be used for storing the files/data.
-// Make sure that the user that runs the program has read/write access to DocumentRoot
+// Client is the primary object that the application interacts with while saving or fetching data
 type Client struct {
+	// DocumentRoot is the absolute path to the directory that can be used for storing the files/data
 	DocumentRoot string
 }
 
+// client is the instance of the Client struct
 var client Client
 
+// InitClient setsup the package for use by an appliction. This should be called before the client can be used.
 func InitClient(documentRoot string) {
 	client = Client{
 		DocumentRoot: documentRoot,
 	}
 }
 
+// GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
 func GetClient() *Client {
 	if client.DocumentRoot == "" {
 		log.Fatal("[GoFiledb] GetClient called without initializing the client")

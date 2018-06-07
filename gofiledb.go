@@ -132,7 +132,7 @@ func (c *Client) GetFile(path string, key string) ([]byte, error) {
 	return file, err
 }
 
-func (c *Client) GetFileIfExists(key string, path string) ([]byte, error) {
+func (c *Client) GetFileIfExists(path string, key string) ([]byte, error) {
 	file, err := c.GetFile(path, key)
 	if IsNotExist(err) {
 		return nil, nil

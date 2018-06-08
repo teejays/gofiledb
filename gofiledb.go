@@ -177,7 +177,7 @@ func (c *Client) FlushAll() error {
 * H A S H I N G 																*
 *********************************************************************************/
 // This section is used to spread files across multiple directories (so one folder doesn't end up with too many files).
-var hashModConstant int = 50
+var HashModConstant int = 50
 
 func hashedFolderName(key string) string {
 	h := getHash(key)
@@ -188,7 +188,7 @@ func hashedFolderName(key string) string {
 func getHash(str string) string {
 	var sum int
 	for i := 0; i < len(str); i++ {
-		sum = int(str[i])
+		sum += int(str[i])
 	}
-	return strconv.Itoa(sum % hashModConstant)
+	return strconv.Itoa(sum % HashModConstant)
 }

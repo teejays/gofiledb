@@ -44,7 +44,26 @@ type (
 func (c *Client) getDocumentRoot() string {
 	return c.documentRoot
 }
+func (c *Client) getCollectionByName(collectionName string) (Collection, error) {
+	c.RegisteredCollections.RLock()
+	defer c.RegisteredCollections.RUnlock()
 
+	fmt.Printf("RegisteredCollections: /n %v\n", c.RegisteredCollections)
+	coll, hasKey := c.RegisteredCollections.Store[collectionName]
+	if !hasKey {
+		return coll, ErrCollectionDoesNotExist
+	}
+	return coll, nil
+}
+
+func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
+	coll, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return coll.AddIndex(fieldLocator)
+}
 func NewClientParams(documentRoot string, numPartitions int) ClientParams {
 	var params ClientParams = ClientParams{
 		documentRoot:  documentRoot,
@@ -206,21 +225,9 @@ func (c *Client) GetFile(collectionName, key string) (*os.File, error) {
 	return os.Open(filepath)
 }
 
-// func (c *Client) getFileIfExist(collectionName, key string) (*os.File, error) {
-
-// 	file, err := getFile(collectionName, key)
-// 	if os.IsNotExists(err) {
-// 		return nil, nil
-// 	}
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return file, nil
-// }
-
 func (c *Client) Get(collectionName string, key string) ([]byte, error) {
 
-	file, err := c.getFile(collectionName, key)
+	file, err := c.GetFile(collectionName, key)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +246,7 @@ func (c *Client) Get(collectionName string, key string) ([]byte, error) {
 
 func (c *Client) GetIfExist(collectionName string, key string) ([]byte, error) {
 
-	file, err := c.getFile(collectionName, key)
+	file, err := c.GetFile(collectionName, key)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -294,7 +301,7 @@ func (c *Client) GetStructIfExists(collectionName string, key string, v interfac
 
 func (c *Client) GetIntoWriter(collectionName, key string, dest io.Writer) error {
 
-	file, err := c.getFile(collectionName, key)
+	file, err := c.GetFile(collectionName, key)
 	if err != nil {
 		return err
 	}
@@ -317,11 +324,12 @@ func (c *Client) getFilePath(collectionName, key string) string {
 }
 
 func (c *Client) getDirPathForDoc(collectionName, key string) string {
-	dirs := []string{c.documentRoot, collectionName, DATA_DIR_NAME, c.getPartitionDirName(key)}
+	collectionDirPath := cl.getDirPathForCollection(collectionName)
+	dirs := []string{collectionDirPath, DATA_DIR_NAME, c.getPartitionDirName(key)}
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 
-func (c *Client) getDirPathForCollection(collectionName string) (string, error) {
+func (c *Client) getDirPathForCollection(collectionName string) string {
 	dirs := []string{c.documentRoot, collectionName}
 	return strings.Join(dirs, string(os.PathSeparator))
 }

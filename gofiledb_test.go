@@ -72,6 +72,18 @@ func TestGetClient(t *testing.T) {
 	GetClient()
 }
 
+func TestAddCollection(t *testing.T) {
+	client := GetClient()
+
+	props := CollectionProps{
+		Name: userCollectionName,
+	}
+	err := client.AddCollection(props)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestSetStruct(t *testing.T) {
 	client := GetClient()
 	err := client.SetStruct(userCollectionName, mock_user_1_key, mock_user_1_data)
@@ -92,19 +104,11 @@ func TestGetStruct(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	fmt.Printf("%v", data)
-}
-
-func TestAddCollection(t *testing.T) {
-	client := GetClient()
-
-	props := CollectionProps{
-		Name: userCollectionName,
+	if data != mock_user_1_data {
+		fmt.Printf("%v", data)
+		t.Error(fmt.Errorf("Data did not match"))
 	}
-	err := client.AddCollection(props)
-	if err != nil {
-		t.Error(err)
-	}
+
 }
 
 func TestAddIndex(t *testing.T) {

@@ -3,11 +3,11 @@
 package gofiledb
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/gob"
+
 	"fmt"
 	"io"
-	"io/ioutil"
+
 	"log"
 	"os"
 	"strconv"
@@ -41,35 +41,58 @@ type (
 	}
 )
 
-func (c *Client) getDocumentRoot() string {
-	return c.documentRoot
-}
-func (c *Client) getCollectionByName(collectionName string) (Collection, error) {
-	c.RegisteredCollections.RLock()
-	defer c.RegisteredCollections.RUnlock()
-
-	fmt.Printf("RegisteredCollections: /n %v\n", c.RegisteredCollections)
-	coll, hasKey := c.RegisteredCollections.Store[collectionName]
-	if !hasKey {
-		return coll, ErrCollectionDoesNotExist
-	}
-	return coll, nil
-}
-
-func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
-	coll, err := c.getCollectionByName(collectionName)
-	if err != nil {
-		return err
-	}
-
-	return coll.AddIndex(fieldLocator)
-}
 func NewClientParams(documentRoot string, numPartitions int) ClientParams {
 	var params ClientParams = ClientParams{
 		documentRoot:  documentRoot,
 		numPartitions: numPartitions,
 	}
 	return params
+}
+
+// client is the instance of the Client struct
+var client Client
+
+// GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
+func GetClient() *Client {
+	if !(&client).isInitialized {
+		log.Fatal("GoFiledb client fetched called without initializing the client")
+	}
+	return &client
+}
+
+// InitClient setsup the package for use by an appliction. This should be called before the client can be used.
+func Initialize(p ClientParams) error {
+	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
+	// which could end up initializing the client twice and might overwrite the param values. Hence, we use a lock
+	// to avoid that situation.
+	(&client).Lock()
+	defer (&client).Unlock()
+
+	if client.isInitialized {
+		return fmt.Errorf("GoFileDb client attempted to initialize more than once")
+	}
+
+	// Ensure that the params provided make sense
+	err := p.validate()
+	if err != nil {
+		return err
+	}
+
+	// Sanitize the params so they'r emore standard
+	p = p.sanitize()
+
+	// Set the client
+	client.ClientParams = p
+
+	// Initialize the CollectionStore
+	err = client.RegisteredCollections.load()
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	client.isInitialized = true
+
+	return nil
 }
 
 func (p ClientParams) validate() error {
@@ -108,50 +131,29 @@ func (p ClientParams) sanitize() ClientParams {
 
 }
 
-// client is the instance of the Client struct
-var cl Client
+func (c *Client) getDocumentRoot() string {
+	return c.documentRoot
+}
 
-// InitClient setsup the package for use by an appliction. This should be called before the client can be used.
-func Initialize(p ClientParams) error {
-	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
-	// which could end up initializing the client twice and might overwrite the param values. Hence, we use a lock
-	// to avoid that situation.
-	(&cl).Lock()
-	defer (&cl).Unlock()
+func (c *Client) getCollectionByName(collectionName string) (Collection, error) {
+	c.RegisteredCollections.RLock()
+	defer c.RegisteredCollections.RUnlock()
 
-	if cl.isInitialized {
-		return fmt.Errorf("GoFileDb client attempted to initialize more than once")
+	//fmt.Printf("RegisteredCollections: /n %v\n", c.RegisteredCollections)
+	coll, hasKey := c.RegisteredCollections.Store[collectionName]
+	if !hasKey {
+		return coll, ErrCollectionDoesNotExist
 	}
+	return coll, nil
+}
 
-	// Ensure that the params provided make sense
-	err := p.validate()
+func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
+	coll, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	// Sanitize the params so they'r emore standard
-	p = p.sanitize()
-
-	// Set the client
-	cl.ClientParams = p
-
-	// Initialize the CollectionStore
-	err = cl.RegisteredCollections.load()
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	cl.isInitialized = true
-
-	return nil
-}
-
-// GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
-func GetClient() *Client {
-	if !(&cl).isInitialized {
-		log.Fatal("GoFiledb client fetched called without initializing the client")
-	}
-	return &cl
+	return coll.AddIndex(fieldLocator)
 }
 
 /********************************************************************************
@@ -160,59 +162,32 @@ func GetClient() *Client {
 
 func (c *Client) Set(collectionName string, key string, data []byte) error {
 
-	var dirPath string = c.getDirPathForDoc(collectionName, key)
-
-	err := createDirIfNotExist(dirPath)
-	if err != nil {
-		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
-	}
-
-	filepath := c.getFilePath(collectionName, key)
-
-	err = ioutil.WriteFile(filepath, data, FILE_PERM)
-	if err != nil {
-		return fmt.Errorf("error while writing file: %s", err)
-	}
-
-	return nil
-}
-
-func (c *Client) SetStruct(collectionName string, key string, v interface{}) error {
-	// Maybe we should allow nil
-	// if v == nil {
-	// 	return fmt.Errorf("[GoFiledb] Cannot save a nil file", key))
-	// }
-
-	b, err := json.Marshal(v)
+	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
-	return c.Set(collectionName, key, b)
+
+	return cl.set(key, data)
+}
+
+func (c *Client) SetStruct(collectionName string, key string, v interface{}) error {
+
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return cl.setFromStruct(key, v)
 }
 
 func (c *Client) SetFromReader(collectionName, key string, src io.Reader) error {
 
-	// ensure the directory exists
-	var dirPath string = c.getDirPathForDoc(collectionName, key)
-	err := createDirIfNotExist(dirPath)
-	if err != nil {
-		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
-	}
-
-	filepath := c.getFilePath(collectionName, key)
-
-	// open the file (copied from https://golang.org/src/io/ioutil/ioutil.go?s=2534:2602#L69)
-	file, err := os.Create(filepath)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(file, src) // first argument is the number of bytes written
+	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return nil
-
+	return cl.setFromReader(key, src)
 }
 
 /********************************************************************************
@@ -220,99 +195,59 @@ func (c *Client) SetFromReader(collectionName, key string, src io.Reader) error 
 *********************************************************************************/
 
 func (c *Client) GetFile(collectionName, key string) (*os.File, error) {
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return nil, err
+	}
 
-	filepath := c.getFilePath(collectionName, key)
-	return os.Open(filepath)
+	return cl.getFile(key)
 }
 
 func (c *Client) Get(collectionName string, key string) ([]byte, error) {
 
-	file, err := c.GetFile(collectionName, key)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	buf := bytes.NewBuffer(nil)
-
-	_, err = io.Copy(buf, file) // the first discarded returnable is the number of bytes copied
+	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
 	}
 
-	return buf.Bytes(), nil
-
+	return cl.getFileData(key)
 }
 
 func (c *Client) GetIfExist(collectionName string, key string) ([]byte, error) {
 
-	file, err := c.GetFile(collectionName, key)
-	if os.IsNotExist(err) {
+	data, err := c.Get(collectionName, key)
+	if os.IsNotExist(err) { // if doesn't exist, return nil
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	buf := bytes.NewBuffer(nil)
-
-	_, err = io.Copy(buf, file) // the first discarded returnable is the number of bytes copied
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), err
-
+	return data, err
 }
 
-func (c *Client) GetStruct(collectionName string, key string, v interface{}) error {
+func (c *Client) GetStruct(collectionName string, key string, dest interface{}) error {
 
-	bytes, err := c.Get(collectionName, key)
+	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	err = json.Unmarshal(bytes, v)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return cl.getIntoStruct(key, dest)
 }
 
-func (c *Client) GetStructIfExists(collectionName string, key string, v interface{}) (bool, error) {
+func (c *Client) GetStructIfExists(collectionName string, key string, dest interface{}) error {
 
-	bytes, err := c.Get(collectionName, key)
+	err := c.GetStruct(collectionName, key, dest)
 	if os.IsNotExist(err) {
-		return false, nil
+		return nil
 	}
-	if err != nil {
-		return true, err
-	}
-
-	err = json.Unmarshal(bytes, v)
-	if err != nil {
-		return true, err
-	}
-
-	return true, nil
+	return err
 }
 
 func (c *Client) GetIntoWriter(collectionName, key string, dest io.Writer) error {
 
-	file, err := c.GetFile(collectionName, key)
+	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
-	_, err = io.Copy(dest, file)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return cl.getIntoWriter(key, dest)
 }
 
 /********************************************************************************
@@ -320,17 +255,21 @@ func (c *Client) GetIntoWriter(collectionName, key string, dest io.Writer) error
 *********************************************************************************/
 
 func (c *Client) getFilePath(collectionName, key string) string {
-	return c.getDirPathForDoc(collectionName, key) + string(os.PathSeparator) + key
+	return c.getDirPathForData(collectionName, key) + string(os.PathSeparator) + key
 }
 
-func (c *Client) getDirPathForDoc(collectionName, key string) string {
-	collectionDirPath := cl.getDirPathForCollection(collectionName)
+func (c *Client) getDirPathForData(collectionName, key string) string {
+	collectionDirPath := c.getDirPathForCollection(collectionName)
 	dirs := []string{collectionDirPath, DATA_DIR_NAME, c.getPartitionDirName(key)}
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 
 func (c *Client) getDirPathForCollection(collectionName string) string {
-	dirs := []string{c.documentRoot, collectionName}
+	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName}
+	return strings.Join(dirs, string(os.PathSeparator))
+}
+
+func joinPath(dirs ...string) string {
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 
@@ -359,15 +298,74 @@ func (c *Client) FlushAll() error {
 // This section is used to spread files across multiple directories (so one folder doesn't end up with too many files).
 
 func (c *Client) getPartitionDirName(key string) string {
-	h := c.getPartitionHash(key)
+	h := getPartitionHash(key, c.numPartitions)
 	return DATA_PARTITION_PREFIX + h
 }
 
 /* This function takes a string, convert each byte to a number representation and adds it, then returns a mod */
-func (c *Client) getPartitionHash(str string) string {
+func getPartitionHash(str string, modConstant int) string {
 	var sum int
 	for i := 0; i < len(str); i++ {
 		sum += int(str[i])
 	}
-	return strconv.Itoa(sum % c.numPartitions)
+	return strconv.Itoa(sum % modConstant)
+}
+
+type collectionStore struct {
+	Store map[string]Collection
+	sync.RWMutex
+}
+
+func (c *collectionStore) save() error {
+	c.Lock()
+	defer c.Unlock()
+
+	// get the path using the globally available client (client) variable
+	path := (&client).getDocumentRoot()
+	path = path + string(os.PathSeparator) + "db_meta"
+	err := createDirIfNotExist(path)
+	if err != nil {
+		return err
+	}
+
+	// open the file where to save
+	path = path + string(os.PathSeparator) + "registered_collections.gob"
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	// write Gob encoded data into the file
+	encoder := gob.NewEncoder(file)
+	err = encoder.Encode(c)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *collectionStore) load() error {
+	c.Lock()
+	defer c.Unlock()
+
+	// get the path using the globally available client (client) variable
+	path := (&client).getDocumentRoot()
+	path = path + string(os.PathSeparator) + "db_meta"
+
+	// open the file where to save
+	path = path + string(os.PathSeparator) + "registered_collections.gob"
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	// write Gob encoded data into the file
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(c)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

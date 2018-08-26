@@ -7,111 +7,48 @@ import (
 	"fmt"
 	"github.com/teejays/clog"
 	"io"
-	//"log"
+	"io/ioutil"
 	"os"
-	"reflect"
 	"strings"
-	"sync"
 )
 
 /********************************************************************************
 * C O L L E C T I O N
 *********************************************************************************/
-type collectionStore struct {
-	Store map[string]Collection
-	sync.RWMutex
-}
-
 var ErrCollectionDoesNotExist = fmt.Errorf("Collection not found")
 
-func (c *collectionStore) save() error {
-	c.Lock()
-	defer c.Unlock()
+const (
+	ENCODING_NONE uint = iota
+	ENCODING_JSON
+	ENCODING_GOB
+)
 
-	// get the path using the globally available cl (client) variable
-	path := (&cl).getDocumentRoot()
-	path = path + string(os.PathSeparator) + "db_meta"
-	err := createDirIfNotExist(path)
-	if err != nil {
-		return err
+type (
+	Collection struct {
+		CollectionProps
+		DirPath string
 	}
 
-	// open the file where to save
-	path = path + string(os.PathSeparator) + "registered_collections.gob"
-	file, err := os.Create(path)
-	if err != nil {
-		return err
+	CollectionProps struct {
+		Name                  string
+		EncodingType          uint
+		EnableGzipCompression bool
+		NumPartitions         int
 	}
-
-	// write Gob encoded data into the file
-	encoder := gob.NewEncoder(file)
-	err = encoder.Encode(c)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *collectionStore) load() error {
-	c.Lock()
-	defer c.Unlock()
-
-	// get the path using the globally available cl (client) variable
-	path := (&cl).getDocumentRoot()
-	path = path + string(os.PathSeparator) + "db_meta"
-
-	// open the file where to save
-	path = path + string(os.PathSeparator) + "registered_collections.gob"
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-
-	// write Gob encoded data into the file
-	decoder := gob.NewDecoder(file)
-	err = decoder.Decode(c)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-type Collection struct {
-	CollectionProps
-	DirPath string
-}
-
-type CollectionProps struct {
-	Name string
-}
+)
 
 func (p CollectionProps) sanitize() CollectionProps {
 	p.Name = strings.TrimSpace(p.Name)
 	p.Name = strings.ToLower(p.Name)
+
+	if p.NumPartitions == 0 { // default value should mean we have one partition
+		p.NumPartitions = 1
+	}
 	return p
 }
 
-func (c *Client) AddCollection(p CollectionProps) error {
-	cl.RegisteredCollections.Lock()
-	defer cl.RegisteredCollections.Unlock()
-
-	// Initialize the collection store if not initialized
-	if cl.RegisteredCollections.Store == nil {
-		cl.RegisteredCollections.Store = make(map[string]Collection)
-	}
-
-	// Sanitize the collection props
-	p = p.sanitize()
-
-	// Don't repeat collection names
-	if _, hasKey := cl.RegisteredCollections.Store[p.Name]; hasKey {
-		return fmt.Errorf("A collection with name %s already exists", p.Name)
-	}
-
-	// Validate the collection props
-	if p.Name == "" {
+func (p CollectionProps) validate() error {
+	if strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("Collection name cannot be empty")
 	}
 	const collectionNameLenMax int = 50
@@ -123,180 +60,205 @@ func (c *Client) AddCollection(p CollectionProps) error {
 		fmt.Errorf("Collection name can be a max of %d chars", collectionNameLenMin)
 	}
 
+	var supportedEncodings []uint = []uint{ENCODING_NONE, ENCODING_JSON, ENCODING_GOB}
+	var isValidEncoding bool
+	for _, enc := range supportedEncodings {
+		if p.EncodingType == enc {
+			isValidEncoding = true
+		}
+	}
+	if !isValidEncoding {
+		return fmt.Errorf("Invalid encoding type")
+	}
+
+	if p.NumPartitions < 1 {
+		return fmt.Errorf("Number of paritions requested can not be negative")
+	}
+
+	return nil
+}
+
+func (c *Client) AddCollection(p CollectionProps) error {
+	c.RegisteredCollections.Lock()
+	defer c.RegisteredCollections.Unlock()
+
+	// Initialize the collection store if not initialized
+	if c.RegisteredCollections.Store == nil {
+		c.RegisteredCollections.Store = make(map[string]Collection)
+	}
+
+	// Sanitize the collection props
+	p = p.sanitize()
+
+	// Don't repeat collection names
+	if _, hasKey := c.RegisteredCollections.Store[p.Name]; hasKey {
+		return fmt.Errorf("A collection with name %s already exists", p.Name)
+	}
+
+	// Validate the collection props
+	err := p.validate()
+	if err != nil {
+		return err
+	}
+
 	// Create a Colelction and add to registered collections
-	var coll Collection
-	coll.CollectionProps = p
+	var cl Collection
+	cl.CollectionProps = p
 
 	// calculate the dir path for this collection
-	coll.DirPath = c.getDirPathForCollection(p.Name)
+	cl.DirPath = c.getDirPathForCollection(p.Name)
 
 	// create the dirs for the collection
-	err := createDirIfNotExist(coll.DirPath + string(os.PathSeparator) + "meta")
+	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME))
 	if err != nil {
 		return err
 	}
-	err = createDirIfNotExist(coll.DirPath + string(os.PathSeparator) + "data")
+	err = createDirIfNotExist(joinPath(cl.DirPath, DATA_DIR_NAME))
 	if err != nil {
 		return err
 	}
-	cl.RegisteredCollections.Store[p.Name] = coll
+	c.RegisteredCollections.Store[p.Name] = cl
 
 	return nil
 }
 
 func (c *Client) RemoveCollection(collectionName string) error {
-	cl.RegisteredCollections.Lock()
-	defer cl.RegisteredCollections.Unlock()
 
-	// sanitize
-	collectionName = strings.TrimSpace(collectionName)
-	// Validate the collection props
-	if collectionName == "" {
-		return fmt.Errorf("Invalid Collection name")
-	}
-
-	// Initialize the collection store if not initialized
-	if cl.RegisteredCollections.Store == nil {
-		return ErrCollectionDoesNotExist
-	}
-
-	// Don't repeat collection names
-	if _, hasKey := cl.RegisteredCollections.Store[collectionName]; !hasKey {
-		return ErrCollectionDoesNotExist
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
 	}
 
 	// Delete all the data & meta dirs for that collection
-	dirPath := cl.getDirPathForCollection(collectionName)
-	clog.Infof("Deleting data at %s...", dirPath)
-	err := os.RemoveAll(dirPath)
+	clog.Infof("Deleting data at %s...", cl.DirPath)
+	err = os.RemoveAll(cl.DirPath)
 	if err != nil {
 		return err
 	}
 
 	// remove the reference in the registration store
 	clog.Infof("Removing collection registration...")
-	delete(cl.RegisteredCollections.Store, collectionName)
+	c.RegisteredCollections.Lock()
+	delete(c.RegisteredCollections.Store, collectionName)
+	c.RegisteredCollections.Unlock()
 
 	return nil
 }
 
-// fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
-func (coll Collection) AddIndex(fieldLocater string) error {
-	// go through all the docs in the collection and create a map...
-	var indexData map[string][]string = make(map[string][]string)
+func (cl Collection) set(key string, data []byte) error {
 
-	// get path for where all the collection data is
-	collDataPath := coll.DirPath + string(os.PathSeparator) + DATA_DIR_NAME
+	// create the partition dir if it doesn't exist already
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key))
+	err := createDirIfNotExist(dirPath)
+	if err != nil {
+		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
+	}
+	path := cl.getFilePath(key)
 
-	// open the data dir, which has all the partition dirs
-	collectionDataDir, err := os.Open(collDataPath)
+	err = ioutil.WriteFile(path, data, FILE_PERM)
+	if err != nil {
+		return fmt.Errorf("error while writing file: %s", err)
+	}
+
+	return nil
+}
+
+func (cl Collection) setFromStruct(key string, v interface{}) error {
+
+	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	defer collectionDataDir.Close()
+	return cl.set(key, data)
+}
 
-	// get all the names of the partition dirs so we can open them
-	partitionDirNames, err := collectionDataDir.Readdirnames(-1)
+func (cl Collection) setFromReader(key string, src io.Reader) error {
+	// create the partition dir if it doesn't exist already
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key))
+	err := createDirIfNotExist(dirPath)
+	if err != nil {
+		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
+	}
+	path := cl.getFilePath(key)
+
+	// open the file (copied from https://golang.org/src/io/ioutil/ioutil.go?s=2534:2602#L69)
+	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-
-	// for each partition dir, open it, make sures it's a Dir, and get all the files within it.
-	for _, pDirName := range partitionDirNames {
-
-		pDirPath := collDataPath + string(os.PathSeparator) + pDirName
-		fileInfo, err := os.Stat(pDirPath)
-		if err != nil {
-			return err
-		}
-		if !fileInfo.IsDir() {
-			clog.Warnf("%s is not a directory", pDirPath)
-			continue
-		}
-
-		pDir, err := os.Open(pDirPath)
-		if err != nil {
-			return err
-		}
-		defer pDir.Close()
-
-		docNames, err := pDir.Readdirnames(0)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println(pDirPath)
-
-		// open each of the doc, and add it to index
-		for _, docName := range docNames {
-
-			docPath := pDirPath + string(os.PathSeparator) + docName
-			fmt.Println(docPath)
-
-			docFile, err := os.Open(docPath)
-			if err != nil {
-				return nil
-			}
-			defer docFile.Close()
-
-			// read the file into a json?
-			buff := bytes.NewBuffer(nil)
-			_, err = io.Copy(buff, docFile)
-			if err != nil {
-				return err
-			}
-
-			doc := buff.Bytes() // this is the json doc
-
-			var docMap map[string]interface{}
-
-			err = json.Unmarshal(doc, &docMap)
-			if err != nil {
-				return err
-			}
-
-			// get the value
-			docMap_v := reflect.ValueOf(docMap)
-			values, err := GetNestedFieldValues(docMap_v, fieldLocater)
-			if err != nil {
-				return err
-			}
-
-			// each of the 'values' correspond to the value for this doc for the given field
-			// we shoud store them in the index
-			for _, v := range values {
-				// Todo: make sure that the values are hashable (i.e. string, int, float etc. and not map, channels etc.)
-				if v.CanInterface() {
-					v_str := fmt.Sprintf("%v", v.Interface())
-
-					fmt.Println(v_str)
-
-					indexData[v_str] = append(indexData[v_str], docName)
-				}
-			}
-
-		}
-
-	}
-
-	// Save the index file.. but first json encode it
-	indexDataJson, err := json.Marshal(indexData)
-	if err != nil {
-		return err
-	}
-
-	collMetaPath := coll.DirPath + string(os.PathSeparator) + META_DIR_NAME
-	indexFile, err := os.Create(collMetaPath + string(os.PathSeparator) + fieldLocater)
-	if err != nil {
-		return err
-	}
-	defer indexFile.Close()
-
-	_, err = indexFile.Write(indexDataJson)
+	_, err = io.Copy(file, src) // first argument is the number of bytes written
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
 
+func (cl Collection) getFile(key string) (*os.File, error) {
+	path := cl.getFilePath(key)
+	return os.Open(path)
+}
+
+func (cl Collection) getFileData(key string) ([]byte, error) {
+	file, err := cl.getFile(key)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	buf := bytes.NewBuffer(nil)
+
+	_, err = io.Copy(buf, file) // the first discarded returnable is the number of bytes copied
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (cl Collection) getIntoStruct(key string, dest interface{}) error {
+
+	if cl.EncodingType == ENCODING_JSON {
+		data, err := cl.getFileData(key)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(data, dest)
+	}
+
+	if cl.EncodingType == ENCODING_GOB {
+		file, err := cl.getFile(key)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		dec := gob.NewDecoder(file)
+		return dec.Decode(dest)
+	}
+
+	return fmt.Errorf("Encoding logic for the encoding type not implemented")
+}
+
+func (cl Collection) getIntoWriter(key string, dest io.Writer) error {
+	file, err := cl.getFile(key)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.Copy(dest, file)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cl Collection) getFilePath(key string) string {
+	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key), key)
+}
+
+func (cl Collection) getPartitionDirName(key string) string {
+	h := getPartitionHash(key, cl.NumPartitions)
+	return DATA_PARTITION_PREFIX + h
 }

@@ -29,7 +29,8 @@ const (
 type (
 	Client struct {
 		ClientParams
-		isInitialized bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
+		RegisteredCollections collectionStore
+		isInitialized         bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
 		sync.RWMutex
 	}
 
@@ -39,6 +40,10 @@ type (
 		enableGzip    bool
 	}
 )
+
+func (c *Client) getDocumentRoot() string {
+	return c.documentRoot
+}
 
 func NewClientParams(documentRoot string, numPartitions int) ClientParams {
 	var params ClientParams = ClientParams{
@@ -77,6 +82,9 @@ func (p ClientParams) sanitize() ClientParams {
 		return p.sanitize()
 	}
 
+	// create a new folder at the path provided
+	p.documentRoot = p.documentRoot + string(os.PathSeparator) + "gofiledb_warehouse"
+
 	return p
 
 }
@@ -107,6 +115,13 @@ func Initialize(p ClientParams) error {
 
 	// Set the client
 	cl.ClientParams = p
+
+	// Initialize the CollectionStore
+	err = cl.RegisteredCollections.load()
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
 	cl.isInitialized = true
 
 	return nil
@@ -126,7 +141,7 @@ func GetClient() *Client {
 
 func (c *Client) Set(collectionName string, key string, data []byte) error {
 
-	var dirPath string = c.getDirPath(collectionName, key)
+	var dirPath string = c.getDirPathForDoc(collectionName, key)
 
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
@@ -159,7 +174,7 @@ func (c *Client) SetStruct(collectionName string, key string, v interface{}) err
 func (c *Client) SetFromReader(collectionName, key string, src io.Reader) error {
 
 	// ensure the directory exists
-	var dirPath string = c.getDirPath(collectionName, key)
+	var dirPath string = c.getDirPathForDoc(collectionName, key)
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
 		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
@@ -185,7 +200,7 @@ func (c *Client) SetFromReader(collectionName, key string, src io.Reader) error 
 * R E A D 																		*
 *********************************************************************************/
 
-func (c *Client) getFile(collectionName, key string) (*os.File, error) {
+func (c *Client) GetFile(collectionName, key string) (*os.File, error) {
 
 	filepath := c.getFilePath(collectionName, key)
 	return os.Open(filepath)
@@ -298,11 +313,16 @@ func (c *Client) GetIntoWriter(collectionName, key string, dest io.Writer) error
 *********************************************************************************/
 
 func (c *Client) getFilePath(collectionName, key string) string {
-	return c.getDirPath(collectionName, key) + string(os.PathSeparator) + key
+	return c.getDirPathForDoc(collectionName, key) + string(os.PathSeparator) + key
 }
 
-func (c *Client) getDirPath(collectionName, key string) string {
-	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName, c.getPartitionDirName(key)}
+func (c *Client) getDirPathForDoc(collectionName, key string) string {
+	dirs := []string{c.documentRoot, collectionName, DATA_DIR_NAME, c.getPartitionDirName(key)}
+	return strings.Join(dirs, string(os.PathSeparator))
+}
+
+func (c *Client) getDirPathForCollection(collectionName string) (string, error) {
+	dirs := []string{c.documentRoot, collectionName}
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 

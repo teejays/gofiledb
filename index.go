@@ -18,17 +18,16 @@ type (
 	}
 )
 
-func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
-	cl, err := c.getCollectionByName(collectionName)
-	if err != nil {
-		return err
-	}
-
-	return cl.addIndex(fieldLocator)
-}
+var ErrIndexExist error = fmt.Errorf("index already exists for that field")
 
 // fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
 func (cl Collection) addIndex(fieldLocater string) error {
+
+	// check that the index doesn't exist already before
+	if cl.IsIndexExist(fieldLocator) {
+		return ErrIndexExist
+	}
+
 	// go through all the docs in the collection and create a map...
 	var index Index
 	index.FieldLocater = fieldLocater
@@ -146,6 +145,19 @@ func (cl Collection) addIndex(fieldLocater string) error {
 		return err
 	}
 
+	cl.CollectionStore.Lock()
+	cl.CollectionStore.Store[fieldLocator] = true
+	cl.CollectionStore.Unock()
+
 	return nil
 
 }
+
+func (cl Collection) isIndexExist(fieldLocator string) (bool, error) {
+	cl.CollectionIndexStore.RLock()
+	exists := cl.CollectionIndexStore.Store[fieldLocator] // this should return false if the index is not set, or if it the value is set to false
+	cl.CollectionIndexStore.RUnlock()
+	return exists
+}
+
+// Todo: removeIndex()

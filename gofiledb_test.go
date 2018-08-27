@@ -91,6 +91,17 @@ func TestAddCollection(t *testing.T) {
 	}
 }
 
+func TestIsCollectionExist(t *testing.T) {
+	client := GetClient()
+	exists, err := client.IsCollectionExist(userCollectionProps.Name)
+	if err != nil {
+		t.Error(err)
+	}
+	if !exists {
+		t.Errorf("Expected collections %s to exist but received false for IsCollectionExist method", userCollectionProps.Name)
+	}
+}
+
 func TestSetStructFirst(t *testing.T) {
 	key := mock_user_2_key
 	data := mock_user_2_data

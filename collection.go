@@ -26,7 +26,8 @@ const (
 type (
 	Collection struct {
 		CollectionProps
-		DirPath string
+		DirPath    string
+		IndexStore CollectionIndexStore
 	}
 
 	CollectionProps struct {
@@ -34,6 +35,11 @@ type (
 		EncodingType          uint
 		EnableGzipCompression bool
 		NumPartitions         int
+	}
+
+	CollectionIndexStore struct {
+		Store map[string]bool
+		sync.Mutex
 	}
 )
 
@@ -129,6 +135,22 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	}
 
 	return nil
+}
+
+func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
+	collectionName = strings.TrimSpace(collectionName)
+	collectionName = strings.ToLower(collectionName)
+
+	_, err := c.getCollectionByName(collectionName)
+
+	if err == ErrCollectionDoesNotExist {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+
 }
 
 func (c *Client) RemoveCollection(collectionName string) error {
@@ -287,6 +309,34 @@ func (cl Collection) getIntoWriter(key string, dest io.Writer) error {
 	}
 
 	return nil
+}
+
+/*** Searchers ***/
+
+// Todo: add order by
+// e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
+func (cl Collection) search(query string) ([]interface{}, error) {
+	// understand the query
+	// split by "+"
+	qParts := strings.Split(query, "+")
+
+	// each part should probaby start by fieldLocator
+	for _, qP := range qParts {
+		_qPart := strings.SplitN(qP, "=", 1)
+		if len(_qPart) < 2 {
+			return nil, fmt.Errorf("Invalid Query around `%s`", qPart)
+		}
+		fieldLocator := _qpart[0]
+		fieldConditions := _qPart[1]
+
+		// let's assume we only support search by value per fieldLocator and not anything fancy like "OR", "AND" greater than, less then etc.
+
+		// check if there is an index
+		isIndex := cl.isIndexExist(fieldLocator)
+		// if yes, get the keys of docs that satisfy the conditions
+	}
+
+	// if there is an index,
 }
 
 /*** Navigation Helpers */

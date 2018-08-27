@@ -173,6 +173,26 @@ func (c *Client) getGlobalMetaStruct(metaName string, v interface{}) error {
 	return nil
 }
 
+/** Searchers **/
+// Todo: search()
+func (c *Client) Search(collectionName string, query string) ([]interface{}, error) {
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return cl.search(query)
+}
+
+func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return cl.addIndex(fieldLocator)
+}
+
 /*** Navigation Helpers ***/
 
 // func (c *Client) getFilePath(collectionName, key string) string {

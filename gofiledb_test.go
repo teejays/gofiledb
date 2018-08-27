@@ -9,6 +9,9 @@ import (
 	"testing"
 )
 
+const REMOVE_COLLECTION = false
+const DESTROY = false
+
 /********************************************************************************
 * M O C K  D A T A 																*
 *********************************************************************************/
@@ -25,6 +28,13 @@ type Org struct {
 }
 
 var userCollectionName string = "users"
+
+var userCollectionProps CollectionProps = CollectionProps{
+	Name:                  "Users",
+	EncodingType:          ENCODING_JSON,
+	EnableGzipCompression: false,
+	NumPartitions:         1,
+}
 
 var mock_user_1_key string = "mock_user_1_key"
 var mock_user_1_data User = User{
@@ -75,41 +85,81 @@ func TestGetClient(t *testing.T) {
 func TestAddCollection(t *testing.T) {
 	client := GetClient()
 
-	props := CollectionProps{
-		Name:         userCollectionName,
-		EncodingType: ENCODING_GOB,
-	}
-	err := client.AddCollection(props)
+	err := client.AddCollection(userCollectionProps)
 	if err != nil {
 		t.Error(err)
 	}
 }
 
-func TestSetStruct(t *testing.T) {
+func TestSetStructFirst(t *testing.T) {
+	key := mock_user_2_key
+	data := mock_user_2_data
+
 	client := GetClient()
-	err := client.SetStruct(userCollectionName, mock_user_1_key, mock_user_1_data)
+	err := client.SetStruct(userCollectionName, key, data)
 	if err != nil {
 		t.Error(err)
+	}
+	err = assertUserDataByKey(key, data)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetStructSecond(t *testing.T) {
+	key := mock_user_2_key
+	data := mock_user_2_data
+
+	client := GetClient()
+	err := client.SetStruct(userCollectionName, key, data)
+	if err != nil {
+		t.Error(err)
+	}
+	err = assertUserDataByKey(key, data)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSetSructOverwrite(t *testing.T) {
+	key := mock_user_2_key
+	data := mock_user_1_data
+
+	client := GetClient()
+	err := client.SetStruct(userCollectionName, key, data)
+	if err != nil {
+		t.Error(err)
+	}
+	err = assertUserDataByKey(key, data)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func assertUserDataByKey(key string, expectedData interface{}) error {
+	client := GetClient()
+
+	var data User
+	err := client.GetStruct(userCollectionName, key, &data)
+	if err != nil {
+		return err
+	}
+	if data != expectedData {
+		return fmt.Errorf("Fectched data did not match expected data: \n Fetched: %v \n Expected: %v", data, expectedData)
 	}
 
-	err = client.SetStruct(userCollectionName, mock_user_2_key, mock_user_2_data)
-	if err != nil {
-		t.Error(err)
-	}
+	return nil
 }
 
 func TestGetStruct(t *testing.T) {
-	client := GetClient()
-	var data User
-	err := client.GetStruct(userCollectionName, mock_user_1_key, &data)
+
+	key := mock_user_2_key
+	data := mock_user_1_data
+
+	err := assertUserDataByKey(key, data)
 	if err != nil {
 		t.Error(err)
 	}
-	if data != mock_user_1_data {
-		fmt.Printf("%v", data)
-		t.Error(fmt.Errorf("Data did not match"))
-	}
-
 }
 
 func TestAddIndex(t *testing.T) {
@@ -125,10 +175,26 @@ func TestAddIndex(t *testing.T) {
 	}
 }
 
-// func TestRemoveCollection(t *testing.T) {
-// 	client := GetClient()
-// 	err := client.RemoveCollection(userCollectionName)
-// 	if err != nil {
-// 		t.Error(err)
-// 	}
-// }
+func TestRemoveCollection(t *testing.T) {
+	if !REMOVE_COLLECTION {
+		log.Println("Leaving collection data as is")
+		return
+	}
+	client := GetClient()
+	err := client.RemoveCollection(userCollectionName)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestDestroy(t *testing.T) {
+	if !DESTROY {
+		log.Println("Not destorying the db")
+		return
+	}
+	client := GetClient()
+	err := client.Destroy()
+	if err != nil {
+		t.Error(err)
+	}
+}

@@ -18,8 +18,17 @@ type (
 	}
 )
 
+func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return cl.addIndex(fieldLocator)
+}
+
 // fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
-func (cl Collection) AddIndex(fieldLocater string) error {
+func (cl Collection) addIndex(fieldLocater string) error {
 	// go through all the docs in the collection and create a map...
 	var index Index
 	index.FieldLocater = fieldLocater

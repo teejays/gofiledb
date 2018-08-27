@@ -32,28 +32,28 @@ func ValueToString(v reflect.Value) (string, error) {
 
 }
 
-// func getValidFieldByNameInt(v reflect.Value, fieldName string) (int64, error) {
-// 	d_v, err := getValidFieldValue(v, fieldName)
-// 	if err != nil {
-// 		return 0, err
-// 	}
-// 	if d_v.Kind() != reflect.Int64 {
-// 		return 0, fmt.Errorf("The field '%s' is not an int64, it's %s.", fieldName, d_v.Kind().String())
-// 	}
-// 	d := d_v.Int()
-// 	return d, nil
-// }
-// func getValidFieldByNameInterface(v reflect.Value, fieldName string) (interface{}, error) {
-// 	d_v, err := getValidFieldValue(v, fieldName)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	if !d_v.CanInterface() {
-// 		return nil, fmt.Errorf("The value of field name '%s' (of kind %s) can not be converted to an reflect.Interface.", fieldName, d_v.Kind().String())
-// 	}
-// 	d := d_v.Interface()
-// 	return d, nil
-// }
+func getValidFieldByNameInt(v reflect.Value, fieldName string) (int64, error) {
+	d_v, err := GetValidFieldValue(v, fieldName)
+	if err != nil {
+		return 0, err
+	}
+	if d_v.Kind() != reflect.Int64 {
+		return 0, fmt.Errorf("The field '%s' is not an int64, it's %s.", fieldName, d_v.Kind().String())
+	}
+	d := d_v.Int()
+	return d, nil
+}
+func getValidFieldByNameInterface(v reflect.Value, fieldName string) (interface{}, error) {
+	d_v, err := GetValidFieldValue(v, fieldName)
+	if err != nil {
+		return nil, err
+	}
+	if !d_v.CanInterface() {
+		return nil, fmt.Errorf("The value of field name '%s' (of kind %s) can not be converted to an reflect.Interface.", fieldName, d_v.Kind().String())
+	}
+	d := d_v.Interface()
+	return d, nil
+}
 
 func GetValidFieldValue(v reflect.Value, fieldName string) (reflect.Value, error) {
 	v = reflect.Indirect(v) // in case it's a pointer

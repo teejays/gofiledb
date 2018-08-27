@@ -79,21 +79,9 @@ func (p CollectionProps) validate() error {
 }
 
 func (c *Client) AddCollection(p CollectionProps) error {
-	c.RegisteredCollections.Lock()
-	defer c.RegisteredCollections.Unlock()
-
-	// Initialize the collection store if not initialized
-	if c.RegisteredCollections.Store == nil {
-		c.RegisteredCollections.Store = make(map[string]Collection)
-	}
 
 	// Sanitize the collection props
 	p = p.sanitize()
-
-	// Don't repeat collection names
-	if _, hasKey := c.RegisteredCollections.Store[p.Name]; hasKey {
-		return fmt.Errorf("A collection with name %s already exists", p.Name)
-	}
 
 	// Validate the collection props
 	err := p.validate()
@@ -104,6 +92,14 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	// Create a Colelction and add to registered collections
 	var cl Collection
 	cl.CollectionProps = p
+
+	// Don't repeat collection names
+	c.registeredCollections.RLock()
+	_, hasKey := c.registeredCollections.Store[p.Name]
+	c.registeredCollections.RUnlock()
+	if hasKey {
+		return fmt.Errorf("A collection with name %s already exists", p.Name)
+	}
 
 	// calculate the dir path for this collection
 	cl.DirPath = c.getDirPathForCollection(p.Name)
@@ -117,7 +113,20 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	if err != nil {
 		return err
 	}
-	c.RegisteredCollections.Store[p.Name] = cl
+
+	c.registeredCollections.Lock()
+	defer c.registeredCollections.Unlock()
+
+	// Initialize the collection store if not initialized (but it should already be initialized because of the Initialize() function)
+	if c.registeredCollections.Store == nil {
+		c.registeredCollections.Store = make(map[string]Collection)
+	}
+	c.registeredCollections.Store[p.Name] = cl
+
+	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -137,13 +146,22 @@ func (c *Client) RemoveCollection(collectionName string) error {
 	}
 
 	// remove the reference in the registration store
+
+	c.registeredCollections.Lock()
+	defer c.registeredCollections.Unlock()
+
 	clog.Infof("Removing collection registration...")
-	c.RegisteredCollections.Lock()
-	delete(c.RegisteredCollections.Store, collectionName)
-	c.RegisteredCollections.Unlock()
+
+	delete(c.registeredCollections.Store, collectionName)
+	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
+
+/*** Data Writers */
 
 func (cl Collection) set(key string, data []byte) error {
 
@@ -209,6 +227,8 @@ func (cl Collection) setFromReader(key string, src io.Reader) error {
 	return nil
 }
 
+/*** Data Readers */
+
 func (cl Collection) getFile(key string) (*os.File, error) {
 	path := cl.getFilePath(key)
 	return os.Open(path)
@@ -268,6 +288,8 @@ func (cl Collection) getIntoWriter(key string, dest io.Writer) error {
 
 	return nil
 }
+
+/*** Navigation Helpers */
 
 func (cl Collection) getFilePath(key string) string {
 	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key), key)

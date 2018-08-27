@@ -165,10 +165,25 @@ func (cl Collection) set(key string, data []byte) error {
 
 func (cl Collection) setFromStruct(key string, v interface{}) error {
 
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
+	var data []byte
+	var err error
+
+	if cl.EncodingType == ENCODING_JSON {
+		data, err = json.Marshal(v)
+		if err != nil {
+			return err
+		}
+
+	} else if cl.EncodingType == ENCODING_GOB {
+		var buff bytes.Buffer
+		enc := gob.NewEncoder(&buff)
+		err = enc.Encode(v)
+		if err != nil {
+			return err
+		}
+		data = buff.Bytes()
 	}
+
 	return cl.set(key, data)
 }
 

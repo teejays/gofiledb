@@ -19,14 +19,14 @@ type (
 )
 
 // fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
-func (coll Collection) AddIndex(fieldLocater string) error {
+func (cl Collection) AddIndex(fieldLocater string) error {
 	// go through all the docs in the collection and create a map...
 	var index Index
 	index.FieldLocater = fieldLocater
 	index.KeyValue = make(map[string][]string)
 
 	// get path for where all the collection data is
-	collDataPath := joinPath(coll.DirPath, DATA_DIR_NAME)
+	collDataPath := joinPath(cl.DirPath, DATA_DIR_NAME)
 
 	// open the data dir, which has all the partition dirs
 	collectionDataDir, err := os.Open(collDataPath)
@@ -84,8 +84,11 @@ func (coll Collection) AddIndex(fieldLocater string) error {
 			}
 
 			doc := buff.Bytes() // this is the json doc
-
 			var docMap map[string]interface{}
+
+			if cl.EncodingType != ENCODING_JSON {
+				return fmt.Errorf("Indexing only supported for JSON data")
+			}
 
 			err = json.Unmarshal(doc, &docMap)
 			if err != nil {
@@ -122,7 +125,7 @@ func (coll Collection) AddIndex(fieldLocater string) error {
 		return err
 	}
 
-	indexPath := joinPath(coll.DirPath, META_DIR_NAME, fieldLocater)
+	indexPath := joinPath(cl.DirPath, META_DIR_NAME, fieldLocater)
 	indexFile, err := os.Create(indexPath)
 	if err != nil {
 		return err

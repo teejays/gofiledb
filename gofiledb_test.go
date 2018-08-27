@@ -76,7 +76,8 @@ func TestAddCollection(t *testing.T) {
 	client := GetClient()
 
 	props := CollectionProps{
-		Name: userCollectionName,
+		Name:         userCollectionName,
+		EncodingType: ENCODING_GOB,
 	}
 	err := client.AddCollection(props)
 	if err != nil {

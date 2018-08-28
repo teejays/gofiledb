@@ -313,28 +313,53 @@ func (cl Collection) getIntoWriter(key string, dest io.Writer) error {
 
 /*** Searchers ***/
 
+type queryPlan struct {
+	Query string
+	Plan []queryPlanField
+}
+
+type queryPlanField struct {
+	FieldLocator  string
+	Conditions    []string
+	QueryPosition int
+	HasIndex      bool
+}
+
 // Todo: add order by
 // e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
 func (cl Collection) search(query string) ([]interface{}, error) {
+	var qPlan queryPlan
+	qPlan = q
+
 	// understand the query
 	// split by "+"
-	qParts := strings.Split(query, "+")
+	qParts := strings.Split(query, "+") // qParts generally represent the WHERE conditions
 
+	qPlan.Plan = make([]queryPlanField, len(qParts))
+
+	// Plan queue
 	// each part should probaby start by fieldLocator
-	for _, qP := range qParts {
+	// let's assume we only support search by value per fieldLocator and not anything fancy like "OR", "AND" greater than, less then etc.
+	for i, qP := range qParts {
 		_qPart := strings.SplitN(qP, "=", 1)
 		if len(_qPart) < 2 {
 			return nil, fmt.Errorf("Invalid Query around `%s`", qPart)
 		}
 		fieldLocator := _qpart[0]
-		fieldConditions := _qPart[1]
+		fieldCondition := _qPart[1]
 
-		// let's assume we only support search by value per fieldLocator and not anything fancy like "OR", "AND" greater than, less then etc.
+		var qPlanField queryPlanField
+		qPlanField.FieldLocator = fieldLocator
+		qPlanField.Conditions = []string{fieldCondition}
+		qPlanField.QueryPosition = i
+		qPlanField.HasIndex = cl.isIndexExist(fieldLocator)
 
-		// check if there is an index
-		isIndex := cl.isIndexExist(fieldLocator)
-		// if yes, get the keys of docs that satisfy the conditions
+		// if there is an index, we should probably prioritize it
+		... 
+
 	}
+
+	// get the keys of docs that satisfy the conditions
 
 	// if there is an index,
 }

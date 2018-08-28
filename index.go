@@ -18,14 +18,46 @@ type (
 	}
 )
 
-var ErrIndexExist error = fmt.Errorf("index already exists for that field")
+func (cl Collection) getIndex(fieldLocator string) (Index, error) {
+
+	var idx Index
+
+	exist := isIndexExist(fieldLocator)
+	if !exist {
+		return idx, ErrIndexIsNotExist
+	}
+
+	// index exists, so let's read it.
+	idxPath := joinPath(cl.DirPath, META_DIR_NAME, "index", fieldLocator)
+
+	file, err := os.Open(idxPath)
+	if err != nil {
+		return idx, err
+	}
+
+	buff := bytes.NewBuffer(nil)
+	err = io.Copy(buff, file)
+	if err != nil {
+		return idx, err
+	}
+
+	err = json.Unmarshal(buff, &idx)
+	if err != nil {
+		return idx, err
+	}
+
+	return idx, nil
+}
+
+var ErrIndexIsExist error = fmt.Errorf("Index already exists for that field")
+var ErrIndexIsNotExist error = fmt.Errorf("Index does not exist")
 
 // fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
 func (cl Collection) addIndex(fieldLocater string) error {
 
 	// check that the index doesn't exist already before
 	if cl.IsIndexExist(fieldLocator) {
-		return ErrIndexExist
+		return ErrIndexIsExist
 	}
 
 	// go through all the docs in the collection and create a map...
@@ -133,7 +165,7 @@ func (cl Collection) addIndex(fieldLocater string) error {
 		return err
 	}
 
-	indexPath := joinPath(cl.DirPath, META_DIR_NAME, fieldLocater)
+	indexPath := joinPath(cl.DirPath, META_DIR_NAME, "index", fieldLocater)
 	indexFile, err := os.Create(indexPath)
 	if err != nil {
 		return err

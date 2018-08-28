@@ -55,6 +55,13 @@ func Initialize(p ClientParams) error {
 	// Set the client
 	client.ClientParams = p
 
+	if p.ignorePreviousData {
+		err = client.Destroy()
+		if err != nil {
+			return err
+		}
+	}
+
 	// Initialize the CollectionStore
 	registeredCollections := new(collectionStore) // registeredCollections is a pointer to collectionStore
 	registeredCollections.Lock()

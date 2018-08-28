@@ -40,20 +40,28 @@ func (c *Client) setRegisteredCollections(cl *collectionStore) {
 	c.registeredCollections = cl
 }
 
-func (c *Client) getCollectionByName(collectionName string) (Collection, error) {
+func (c *Client) getCollectionByName(collectionName string) (*Collection, error) {
 	c.registeredCollections.RLock()
 	defer c.registeredCollections.RUnlock()
 
 	cl, hasKey := c.registeredCollections.Store[collectionName]
 	if !hasKey {
-		return cl, ErrCollectionDoesNotExist
+		return nil, ErrCollectionDoesNotExist
 	}
-	return cl, nil
+	return &cl, nil
 }
 
+func (c *Client) getIsInitialized() bool {
+	return c.isInitialized
+}
 func (c *Client) Destroy() error {
-	// remove everything related to this client
-	return os.RemoveAll(c.getDocumentRoot())
+	// remove everything related to this client, and refresh it
+	err := os.RemoveAll(c.getDocumentRoot())
+	if err != nil {
+		return err
+	}
+	c = &Client{}
+	return nil
 }
 
 /*** Data Writers ***/
@@ -215,9 +223,10 @@ func (c *Client) getDirPathForCollection(collectionName string) string {
 *********************************************************************************/
 
 type ClientParams struct {
-	documentRoot  string // DocumentRoot is the absolute path to the directory that can be used for storing the files/data
-	numPartitions int    // NumPartitions determines how many sub-folders should the package create inorder to partition the data
-	enableGzip    bool
+	documentRoot       string // DocumentRoot is the absolute path to the directory that can be used for storing the files/data
+	numPartitions      int    // NumPartitions determines how many sub-folders should the package create inorder to partition the data
+	ignorePreviousData bool
+	// enableGzip    bool
 }
 
 func (p ClientParams) validate() error {

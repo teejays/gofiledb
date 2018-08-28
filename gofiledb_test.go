@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-const REMOVE_COLLECTION = true
-const DESTROY = true
+const REMOVE_COLLECTION = false
+const DESTROY = false
 
 /********************************************************************************
 * M O C K  D A T A 																*
@@ -66,8 +66,9 @@ func TestInitClient(t *testing.T) {
 	var home string = usr.HomeDir
 	var document_root string = home + "/" + "gofiledb_test"
 	params := ClientParams{
-		documentRoot:  document_root,
-		numPartitions: 50,
+		documentRoot:       document_root,
+		numPartitions:      50,
+		ignorePreviousData: true,
 	}
 	err = Initialize(params)
 	if err != nil {
@@ -102,9 +103,22 @@ func TestIsCollectionExist(t *testing.T) {
 	}
 }
 
+func TestAddIndex(t *testing.T) {
+	client := GetClient()
+	err := client.AddIndex(userCollectionName, "Age")
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = client.AddIndex(userCollectionName, "Org.OrgId")
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestSetStructFirst(t *testing.T) {
-	key := mock_user_2_key
-	data := mock_user_2_data
+	key := mock_user_1_key
+	data := mock_user_1_data
 
 	client := GetClient()
 	err := client.SetStruct(userCollectionName, key, data)
@@ -168,19 +182,6 @@ func TestGetStruct(t *testing.T) {
 	data := mock_user_1_data
 
 	err := assertUserDataByKey(key, data)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
-func TestAddIndex(t *testing.T) {
-	client := GetClient()
-	err := client.AddIndex(userCollectionName, "Age")
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = client.AddIndex(userCollectionName, "Org.OrgId")
 	if err != nil {
 		t.Error(err)
 	}

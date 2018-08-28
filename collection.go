@@ -9,7 +9,9 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 )
 
 /********************************************************************************
@@ -38,10 +40,36 @@ type (
 	}
 
 	CollectionIndexStore struct {
-		Store map[string]bool
-		sync.Mutex
+		Store map[string]IndexInfo
+		sync.RWMutex
+	}
+
+	collectionIndexStoreGob struct {
+		Store map[string]IndexInfo
 	}
 )
+
+func (_s CollectionIndexStore) GobEncode() ([]byte, error) {
+
+	s := collectionIndexStoreGob{_s.Store}
+	buff := bytes.NewBuffer(nil)
+	enc := gob.NewEncoder(buff)
+	err := enc.Encode(s)
+	return buff.Bytes(), err
+}
+
+func (_s *CollectionIndexStore) GobDecode([]byte) error {
+	var s collectionIndexStoreGob
+
+	buff := bytes.NewBuffer(nil)
+	dec := gob.NewDecoder(buff)
+	err := dec.Decode(s)
+	if err != nil {
+		return err
+	}
+	_s.Store = s.Store
+	return nil
+}
 
 func (p CollectionProps) sanitize() CollectionProps {
 	p.Name = strings.TrimSpace(p.Name)
@@ -107,7 +135,7 @@ func (c *Client) AddCollection(p CollectionProps) error {
 		return fmt.Errorf("A collection with name %s already exists", p.Name)
 	}
 
-	// calculate the dir path for this collection
+	// Create the required dir paths for this collection
 	cl.DirPath = c.getDirPathForCollection(p.Name)
 
 	// create the dirs for the collection
@@ -115,10 +143,20 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	if err != nil {
 		return err
 	}
+	// for indexes
+	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME, "index"))
+	if err != nil {
+		return err
+	}
 	err = createDirIfNotExist(joinPath(cl.DirPath, DATA_DIR_NAME))
 	if err != nil {
 		return err
 	}
+
+	// Initialize the IndexStore, which stores info on the indexes associated with this Collection
+	cl.IndexStore.Store = make(map[string]IndexInfo)
+
+	// Register the Collection
 
 	c.registeredCollections.Lock()
 	defer c.registeredCollections.Unlock()
@@ -311,59 +349,6 @@ func (cl Collection) getIntoWriter(key string, dest io.Writer) error {
 	return nil
 }
 
-/*** Searchers ***/
-
-type queryPlan struct {
-	Query string
-	Plan []queryPlanField
-}
-
-type queryPlanField struct {
-	FieldLocator  string
-	Conditions    []string
-	QueryPosition int
-	HasIndex      bool
-}
-
-// Todo: add order by
-// e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
-func (cl Collection) search(query string) ([]interface{}, error) {
-	var qPlan queryPlan
-	qPlan = q
-
-	// understand the query
-	// split by "+"
-	qParts := strings.Split(query, "+") // qParts generally represent the WHERE conditions
-
-	qPlan.Plan = make([]queryPlanField, len(qParts))
-
-	// Plan queue
-	// each part should probaby start by fieldLocator
-	// let's assume we only support search by value per fieldLocator and not anything fancy like "OR", "AND" greater than, less then etc.
-	for i, qP := range qParts {
-		_qPart := strings.SplitN(qP, "=", 1)
-		if len(_qPart) < 2 {
-			return nil, fmt.Errorf("Invalid Query around `%s`", qPart)
-		}
-		fieldLocator := _qpart[0]
-		fieldCondition := _qPart[1]
-
-		var qPlanField queryPlanField
-		qPlanField.FieldLocator = fieldLocator
-		qPlanField.Conditions = []string{fieldCondition}
-		qPlanField.QueryPosition = i
-		qPlanField.HasIndex = cl.isIndexExist(fieldLocator)
-
-		// if there is an index, we should probably prioritize it
-		... 
-
-	}
-
-	// get the keys of docs that satisfy the conditions
-
-	// if there is an index,
-}
-
 /*** Navigation Helpers */
 
 func (cl Collection) getFilePath(key string) string {
@@ -373,4 +358,184 @@ func (cl Collection) getFilePath(key string) string {
 func (cl Collection) getPartitionDirName(key string) string {
 	h := getPartitionHash(key, cl.NumPartitions)
 	return DATA_PARTITION_PREFIX + h
+}
+
+/********************************************************************************
+* S E A R C H
+*********************************************************************************/
+
+type queryPlan struct {
+	Query          string
+	ConditionsPlan queryConditionsPlan
+}
+
+type queryConditionsPlan []queryPlanCondition
+
+type queryPlanCondition struct {
+	FieldLocator    string
+	ConditionValues []string
+	QueryPosition   int
+	HasIndex        bool
+	IndexInfo       *IndexInfo
+}
+
+func (qs queryConditionsPlan) Len() int {
+	return len(qs)
+}
+
+func (qs queryConditionsPlan) Less(i, j int) bool {
+	if qs[i].HasIndex && !qs[j].HasIndex {
+		return true
+	}
+	if !qs[i].HasIndex && qs[j].HasIndex {
+		return false
+	}
+	if qs[i].HasIndex && qs[j].HasIndex {
+		return qs[i].IndexInfo.NumValues <= qs[j].IndexInfo.NumValues
+	}
+	// both don't have indexes, doesn't matter, return something arbitrary e.g. which one was mentioned first in the query
+	return qs[i].QueryPosition > qs[j].QueryPosition
+}
+
+func (qs queryConditionsPlan) Swap(i, j int) {
+	var temp queryPlanCondition = qs[i]
+	qs[i] = qs[j]
+	qs[j] = temp
+}
+
+// Todo: add order by
+// e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
+func (cl Collection) search(query string) ([]interface{}, error) {
+	var err error
+	var qPlan queryPlan
+	qPlan.Query = query
+
+	// get the plan, which is in the form of type queryConditionsPlan
+	qPlan.ConditionsPlan, err = cl.getConditionsPlan(query)
+	if err != nil {
+		return nil, err
+	}
+
+	// execute the plan
+	var resultKeys map[string]bool // value type int is just arbitrary so we can store some temp info when find intersects later
+	for step, qCondition := range qPlan.ConditionsPlan {
+		step++ // so we start with step = 1
+
+		// if index, open index
+		if qCondition.HasIndex {
+			idx, err := cl.getIndex(qCondition.FieldLocator)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, conditionValue := range qCondition.ConditionValues {
+
+				// for each condition, get the values (doc keys) that satisfy the condition
+				docIds := idx.KeyValue[conditionValue]
+				if step == 1 {
+					// first time we're getting the docs, just add them to results
+					for _, dId := range docIds {
+						resultKeys[dId] = true
+					}
+
+				} else {
+					resultKeys = findIntersectionMapSlice(resultKeys, docIds)
+				}
+
+			}
+
+		} else { // If there is no index, then we'll have to open all the docs.. :/ Let's not support it for now
+			return nil, fmt.Errorf("Searching is only supported on indexed fields. No index found for field %s", qCondition.FieldLocator)
+
+		}
+
+	}
+
+	// After this for loop, we should have a map of all the doc keys we want to return
+
+	var results []interface{}
+	for docKey, _ := range resultKeys {
+		var doc map[string]interface{}
+		err := cl.getIntoStruct(docKey, &doc)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, doc)
+	}
+
+	return results, nil
+
+}
+
+// find intersection of a and b
+func findIntersectionMapSlice(a map[string]bool, b []string) map[string]bool {
+
+	var intersect map[string]bool = make(map[string]bool)
+	// loop through the bs, add them to intersect if they are in a
+	for _, bVal := range b {
+		if hasKey := a[bVal]; hasKey {
+			intersect[bVal] = true
+		}
+	}
+
+	return intersect
+}
+
+// This could be way more advanced, but have to make a call on what functionality to allow right now
+// Allowed: ANDs: represented by '+'
+func (cl Collection) getConditionsPlan(query string) (queryConditionsPlan, error) {
+
+	var err error
+	var qConditionsPlan queryConditionsPlan
+	const AND_SEPARATOR string = "+"
+	const KV_SEPARATOR string = ":"
+
+	// Split each query by the separator `+`, each part represents a separate conditional
+	qParts := strings.Split(query, AND_SEPARATOR)
+
+	// for each of the condition's field locator, we'll get and cache the index info so we don't have to do it again
+	var indexInfoCache map[string]IndexInfo = make(map[string]IndexInfo)
+
+	// Each part is a condition statement, euch as UserId=12, OrgId=22.
+	for i, qP := range qParts {
+
+		// We need to split it by field locator and the condition value
+		// Understand this part of condition
+		_qP := strings.SplitN(qP, KV_SEPARATOR, 1)
+		if len(_qP) < 2 {
+			return qConditionsPlan, fmt.Errorf("Invalid Query around `%s`", qP)
+		}
+		fieldLocator := _qP[0]
+		fieldCondition := _qP[1]
+
+		var qPlanCondition queryPlanCondition
+		qPlanCondition.FieldLocator = fieldLocator
+		qPlanCondition.ConditionValues = []string{fieldCondition}
+		qPlanCondition.QueryPosition = i
+		qPlanCondition.HasIndex = cl.indexIsExist(fieldLocator)
+
+		if qPlanCondition.HasIndex {
+			idxInfo, inCache := indexInfoCache[fieldLocator]
+			if !inCache {
+				idxInfo, err = cl.getIndexInfo(fieldLocator)
+				if err != nil {
+					return qConditionsPlan, err
+				}
+				indexInfoCache[fieldLocator] = idxInfo
+			}
+
+			qPlanCondition.IndexInfo = &idxInfo
+		}
+
+		qConditionsPlan = append(qConditionsPlan, qPlanCondition)
+
+	}
+
+	// by this point, we should have info on all conditional statements...
+	// we should order the conditionals based on ... 1) if they have index, 2) how big in the index
+	// this is done by the sort method
+	sort.Sort(qConditionsPlan)
+
+	return qConditionsPlan, nil
+
 }

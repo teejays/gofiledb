@@ -12,9 +12,13 @@ import (
 
 type (
 	Index struct {
+		IndexInfo
+		KeyValue map[string][]string
+	}
+	IndexInfo struct {
 		FieldLocater string
 		FieldType    string
-		KeyValue     map[string][]string
+		NumValues    int
 	}
 )
 
@@ -22,7 +26,7 @@ func (cl Collection) getIndex(fieldLocator string) (Index, error) {
 
 	var idx Index
 
-	exist := isIndexExist(fieldLocator)
+	exist := cl.indexIsExist(fieldLocator)
 	if !exist {
 		return idx, ErrIndexIsNotExist
 	}
@@ -36,12 +40,12 @@ func (cl Collection) getIndex(fieldLocator string) (Index, error) {
 	}
 
 	buff := bytes.NewBuffer(nil)
-	err = io.Copy(buff, file)
+	_, err = io.Copy(buff, file)
 	if err != nil {
 		return idx, err
 	}
 
-	err = json.Unmarshal(buff, &idx)
+	err = json.Unmarshal(buff.Bytes(), &idx)
 	if err != nil {
 		return idx, err
 	}
@@ -49,20 +53,33 @@ func (cl Collection) getIndex(fieldLocator string) (Index, error) {
 	return idx, nil
 }
 
+func (cl Collection) getIndexInfo(fieldLocator string) (IndexInfo, error) {
+
+	cl.IndexStore.RLock()
+	defer cl.IndexStore.RUnlock()
+
+	indexInfo, hasKey := cl.IndexStore.Store[fieldLocator] // this should return false if the index is not set
+	if !hasKey {
+		return indexInfo, ErrIndexIsNotExist
+	}
+
+	return indexInfo, nil
+}
+
 var ErrIndexIsExist error = fmt.Errorf("Index already exists for that field")
 var ErrIndexIsNotExist error = fmt.Errorf("Index does not exist")
 
 // fieldName could be fieldA.fieldB, Components.Basic.Data.OrgId
-func (cl Collection) addIndex(fieldLocater string) error {
+func (cl Collection) addIndex(fieldLocator string) error {
 
 	// check that the index doesn't exist already before
-	if cl.IsIndexExist(fieldLocator) {
+	if cl.indexIsExist(fieldLocator) {
 		return ErrIndexIsExist
 	}
 
 	// go through all the docs in the collection and create a map...
 	var index Index
-	index.FieldLocater = fieldLocater
+	index.FieldLocater = fieldLocator
 	index.KeyValue = make(map[string][]string)
 
 	// get path for where all the collection data is
@@ -137,7 +154,7 @@ func (cl Collection) addIndex(fieldLocater string) error {
 
 			// get the value
 			docMap_v := reflect.ValueOf(docMap)
-			values, err := GetNestedFieldValues(docMap_v, fieldLocater)
+			values, err := GetNestedFieldValues(docMap_v, fieldLocator)
 			if err != nil {
 				return err
 			}
@@ -150,8 +167,18 @@ func (cl Collection) addIndex(fieldLocater string) error {
 					v_i := v.Interface()
 					v_str := fmt.Sprintf("%v", v_i)
 
-					index.FieldType = reflect.TypeOf(v_i).Kind().String()
+					// theoretically, values that correspond to the provided field locator could be of different types
+					// so, if we encounter different types, we should error out
+					if index.FieldType == "" { // if hasn't been set yet, it's probably the first iteration so set it
+						index.FieldType = reflect.TypeOf(v_i).Kind().String()
+					}
+
+					// make sure that the field of this value is the same as what we expect
+					if index.FieldType != reflect.TypeOf(v_i).Kind().String() {
+						return fmt.Errorf("Field locator %s corresponds to more than one data type. Cannot create an index.", fieldLocator)
+					}
 					index.KeyValue[v_str] = append(index.KeyValue[v_str], docName)
+
 				}
 			}
 
@@ -159,13 +186,15 @@ func (cl Collection) addIndex(fieldLocater string) error {
 
 	}
 
+	index.NumValues = len(index.KeyValue)
+
 	// Save the index file.. but first json encode it
 	indexJson, err := json.Marshal(index)
 	if err != nil {
 		return err
 	}
 
-	indexPath := joinPath(cl.DirPath, META_DIR_NAME, "index", fieldLocater)
+	indexPath := joinPath(cl.DirPath, META_DIR_NAME, "index", fieldLocator)
 	indexFile, err := os.Create(indexPath)
 	if err != nil {
 		return err
@@ -177,19 +206,20 @@ func (cl Collection) addIndex(fieldLocater string) error {
 		return err
 	}
 
-	cl.CollectionStore.Lock()
-	cl.CollectionStore.Store[fieldLocator] = true
-	cl.CollectionStore.Unock()
+	cl.IndexStore.Lock()
+	cl.IndexStore.Store[fieldLocator] = index.IndexInfo
+	cl.IndexStore.Unlock()
 
 	return nil
 
 }
 
-func (cl Collection) isIndexExist(fieldLocator string) (bool, error) {
-	cl.CollectionIndexStore.RLock()
-	exists := cl.CollectionIndexStore.Store[fieldLocator] // this should return false if the index is not set, or if it the value is set to false
-	cl.CollectionIndexStore.RUnlock()
-	return exists
+func (cl Collection) indexIsExist(fieldLocator string) bool {
+	cl.IndexStore.RLock()
+	defer cl.IndexStore.RUnlock()
+
+	_, hasKey := cl.IndexStore.Store[fieldLocator] // this should return false if the index is not set
+	return hasKey
 }
 
 // Todo: removeIndex()

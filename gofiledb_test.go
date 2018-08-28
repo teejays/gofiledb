@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-const REMOVE_COLLECTION = false
-const DESTROY = false
+const REMOVE_COLLECTION = true
+const DESTROY = true
 
 /********************************************************************************
 * M O C K  D A T A 																*

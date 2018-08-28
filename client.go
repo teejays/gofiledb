@@ -178,7 +178,7 @@ func (c *Client) getGlobalMetaStruct(metaName string, v interface{}) error {
 func (c *Client) Search(collectionName string, query string) ([]interface{}, error) {
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return cl.search(query)

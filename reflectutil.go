@@ -75,7 +75,12 @@ func GetValidFieldValue(v reflect.Value, fieldName string) (reflect.Value, error
 	return d_v, nil
 }
 
-// Recursive function, that takes a data object and a string of form "A.B.[]C.D.Id", and gets the value of the field represented by the string
+func GetNestedFieldValuesOfStruct(data interface{}, fieldName string) ([]reflect.Value, error) {
+	data_v := reflect.ValueOf(data)
+	return GetNestedFieldValues(data_v, fieldName)
+}
+
+// GetNestedFieldValues is recursive function, that takes a data object and a string of form "A.B.[]C.D.Id", and gets the value of the field represented by the string
 // works when the fieldName is nested within slices as well
 func GetNestedFieldValues(v reflect.Value, fieldName string) ([]reflect.Value, error) {
 	var response []reflect.Value

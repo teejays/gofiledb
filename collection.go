@@ -49,16 +49,18 @@ type (
 	}
 )
 
-func (_s IndexStore) GobEncode() ([]byte, error) {
+// CollectionStore has issues when being encoded into Gob, because of the sync.RWMutex
+// Therefore, we need to define our own GobEncode/GobDecode functions for it.
+func (s *IndexStore) GobEncode() ([]byte, error) {
 
-	s := collectionIndexStoreGob{_s.Store}
+	_s := collectionIndexStoreGob{s.Store}
 	buff := bytes.NewBuffer(nil)
 	enc := gob.NewEncoder(buff)
-	err := enc.Encode(s)
+	err := enc.Encode(_s)
 	return buff.Bytes(), err
 }
 
-func (_s *IndexStore) GobDecode([]byte) error {
+func (s *IndexStore) GobDecode([]byte) error {
 	var s collectionIndexStoreGob
 
 	buff := bytes.NewBuffer(nil)
@@ -67,126 +69,203 @@ func (_s *IndexStore) GobDecode([]byte) error {
 	if err != nil {
 		return err
 	}
-	_s.Store = s.Store
+	s.Store = _s.Store
 	return nil
 }
 
-func (p CollectionProps) sanitize() CollectionProps {
-	p.Name = strings.TrimSpace(p.Name)
-	p.Name = strings.ToLower(p.Name)
+/********************************************************************************
+* C O L L E C T I O N  <-> I N D E X
+*********************************************************************************/
 
-	if p.NumPartitions == 0 { // default value should mean we have one partition
-		p.NumPartitions = 1
-	}
-	return p
-}
+// fieldLocator could be fieldA.fieldB, Components.Basic.Data.OrgId
+func (cl *Collection) addIndex(fieldLocator string) error {
 
-func (p CollectionProps) validate() error {
-	if strings.TrimSpace(p.Name) == "" {
-		return fmt.Errorf("Collection name cannot be empty")
-	}
-	const collectionNameLenMax int = 50
-	const collectionNameLenMin int = 2
-	if len(p.Name) < collectionNameLenMin {
-		fmt.Errorf("Collection name needs to be a minimum of %d chars", collectionNameLenMin)
-	}
-	if len(p.Name) > collectionNameLenMax {
-		fmt.Errorf("Collection name can be a max of %d chars", collectionNameLenMin)
+	// check that the index doesn't exist already before
+	if cl.isIndexExist(fieldLocator) {
+		return ErrIndexIsExist
 	}
 
-	var supportedEncodings []uint = []uint{ENCODING_NONE, ENCODING_JSON, ENCODING_GOB}
-	var isValidEncoding bool
-	for _, enc := range supportedEncodings {
-		if p.EncodingType == enc {
-			isValidEncoding = true
+	// Only enabed JSON indexing
+	if cl.EncodingType != ENCODING_JSON {
+		return fmt.Errorf("Indexing only supported for JSON encoded data")
+	}
+
+	// Go through all the docs in the collection and create the maps...
+	var index Index
+	index.FieldLocator = fieldLocator
+	index.KeyValue = make(map[string][]string)
+	index.ValueKey = make(map[string][]string)
+
+	// get path for where all the collection data is
+	dataDirPath := joinPath(cl.DirPath, DATA_DIR_NAME)
+
+	// open the data dir, which has all the partition dirs
+	dataDir, err := os.Open(dataDirPath)
+	if err != nil {
+		return err
+	}
+	defer dataDir.Close()
+
+	// get all the names of the partition dirs so we can open them
+	partitionDirNames, err := dataDir.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+
+	// for each partition dir, open it, make sures it's a Dir, and get all the files within it.
+	for _, pDirName := range partitionDirNames {
+
+		pDirPath := joinPath(dataDirPath, pDirName)
+		fileInfo, err := os.Stat(pDirPath)
+		if err != nil {
+			return err
+		}
+		if !fileInfo.IsDir() {
+			clog.Warnf("%s: not a directory", pDirPath)
+			continue
+		}
+
+		pDir, err := os.Open(pDirPath)
+		if err != nil {
+			return err
+		}
+		defer pDir.Close()
+
+		docNames, err := pDir.Readdirnames(-1)
+		if err != nil {
+			return err
+		}
+
+		// open each of the doc, and add it to index
+		for _, docName := range docNames {
+
+			docPath := joinPath(pDirPath, docName)
+
+			index, err = addDocToExistingIndex(index, docName, docPath)
+			if err != nil {
+				return err
+			}
 		}
 	}
-	if !isValidEncoding {
-		return fmt.Errorf("Invalid encoding type")
+
+	err = cl.saveIndex(index)
+	if err != nil {
+		return err
 	}
 
-	if p.NumPartitions < 1 {
-		return fmt.Errorf("Number of paritions requested can not be negative")
+	return nil
+
+}
+
+func (cl *Collection) addDocToIndexes(docKey string) error {
+
+	// get all the indexes
+	indexStore := cl.IndexStore.Store
+
+	for fieldLocator := range indexStore {
+
+		idx, err := cl.getIndex(fieldLocator)
+		if err != nil {
+			return err
+		}
+
+		idx, err = idx.addDocByPath(docKey, cl.getFilePath(key))
+		if err != nil {
+			return err
+		}
+
+		err = cl.saveIndex(idx)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (cl *Collection) getFilePath(key string) string {
-	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key), key)
+func (cl *Collection) saveIndex(idx Index) error {
+
+	cl.IndexStore.Lock()
+	defer cl.IndexStore.Unlock()
+
+	// Save the index file.. but first json encode it
+	idxJson, err := json.Marshal(idx)
+	if err != nil {
+		return err
+	}
+
+	idxPath := joinPath(cl.DirPath, META_DIR_NAME, "index", idx.FieldLocator)
+	idxFile, err := os.Create(idxPath)
+	if err != nil {
+		return err
+	}
+	defer idxFile.Close()
+
+	_, err = idxFile.Write(idxJson)
+	if err != nil {
+		return err
+	}
+
+	cl.IndexStore.Store[idx.FieldLocator] = idx.IndexInfo
+
+	return nil
 }
 
-func (cl *Collection) getPartitionDirName(key string) string {
-	h := getPartitionHash(key, cl.NumPartitions)
-	return DATA_PARTITION_PREFIX + h
+func (cl *Collection) getIndexInfo(fieldLocator string) (IndexInfo, error) {
+
+	cl.IndexStore.RLock()
+	defer cl.IndexStore.RUnlock()
+
+	indexInfo, hasKey := cl.IndexStore.Store[fieldLocator] // this should return false if the index is not set
+	if !hasKey {
+		return indexInfo, ErrIndexIsNotExist
+	}
+
+	return indexInfo, nil
+}
+
+func (cl *Collection) getIndex(fieldLocator string) (Index, error) {
+
+	var idx Index
+
+	exist := cl.isIndexExist(fieldLocator)
+	if !exist {
+		return idx, ErrIndexIsNotExist
+	}
+
+	// index exists, so let's read it.
+	idxPath := joinPath(cl.DirPath, META_DIR_NAME, "index", fieldLocator)
+
+	file, err := os.Open(idxPath)
+	if err != nil {
+		return idx, err
+	}
+
+	buff := bytes.NewBuffer(nil)
+	_, err = io.Copy(buff, file)
+	if err != nil {
+		return idx, err
+	}
+
+	err = json.Unmarshal(buff.Bytes(), &idx)
+	if err != nil {
+		return idx, err
+	}
+
+	return idx, nil
+}
+
+func (cl *Collection) indexIsExist(fieldLocator string) bool {
+	cl.IndexStore.RLock()
+	defer cl.IndexStore.RUnlock()
+
+	_, hasKey := cl.IndexStore.Store[fieldLocator]
+	return hasKey
 }
 
 /********************************************************************************
 * C L I E N T  <->  C O L L E C T I O N
 *********************************************************************************/
-
-func (c *Client) AddCollection(p CollectionProps) error {
-
-	// Sanitize the collection props
-	p = p.sanitize()
-
-	// Validate the collection props
-	err := p.validate()
-	if err != nil {
-		return err
-	}
-
-	// Create a Colelction and add to registered collections
-	var cl Collection
-	cl.CollectionProps = p
-
-	// Don't repeat collection names
-	c.registeredCollections.RLock()
-	_, hasKey := c.registeredCollections.Store[p.Name]
-	c.registeredCollections.RUnlock()
-	if hasKey {
-		return fmt.Errorf("A collection with name %s already exists", p.Name)
-	}
-
-	// Create the required dir paths for this collection
-	cl.DirPath = c.getDirPathForCollection(p.Name)
-
-	// create the dirs for the collection
-	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME))
-	if err != nil {
-		return err
-	}
-	// for indexes
-	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME, "index"))
-	if err != nil {
-		return err
-	}
-	err = createDirIfNotExist(joinPath(cl.DirPath, DATA_DIR_NAME))
-	if err != nil {
-		return err
-	}
-
-	// Initialize the IndexStore, which stores info on the indexes associated with this Collection
-	cl.IndexStore.Store = make(map[string]IndexInfo)
-
-	// Register the Collection
-
-	c.registeredCollections.Lock()
-	defer c.registeredCollections.Unlock()
-
-	// Initialize the collection store if not initialized (but it should already be initialized because of the Initialize() function)
-	if c.registeredCollections.Store == nil {
-		c.registeredCollections.Store = make(map[string]Collection)
-	}
-	c.registeredCollections.Store[p.Name] = cl
-
-	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 
 func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 	collectionName = strings.TrimSpace(collectionName)
@@ -202,36 +281,6 @@ func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 	}
 	return true, nil
 
-}
-
-func (c *Client) RemoveCollection(collectionName string) error {
-
-	cl, err := c.getCollectionByName(collectionName)
-	if err != nil {
-		return err
-	}
-
-	// Delete all the data & meta dirs for that collection
-	clog.Infof("Deleting data at %s...", cl.DirPath)
-	err = os.RemoveAll(cl.DirPath)
-	if err != nil {
-		return err
-	}
-
-	// remove the reference in the registration store
-
-	c.registeredCollections.Lock()
-	defer c.registeredCollections.Unlock()
-
-	clog.Infof("Removing collection registration...")
-
-	delete(c.registeredCollections.Store, collectionName)
-	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 /********************************************************************************
@@ -371,6 +420,60 @@ func (cl *Collection) getIntoWriter(key string, dest io.Writer) error {
 	_, err = io.Copy(dest, file)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+/********************************************************************************
+* O T H E R S
+*********************************************************************************/
+
+func (cl *Collection) getFilePath(key string) string {
+	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key), key)
+}
+
+func (cl *Collection) getPartitionDirName(key string) string {
+	h := getPartitionHash(key, cl.NumPartitions)
+	return DATA_PARTITION_PREFIX + h
+}
+
+func (p CollectionProps) sanitize() CollectionProps {
+	p.Name = strings.TrimSpace(p.Name)
+	p.Name = strings.ToLower(p.Name)
+
+	if p.NumPartitions == 0 { // default value should mean we have one partition
+		p.NumPartitions = 1
+	}
+	return p
+}
+
+func (p CollectionProps) validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("Collection name cannot be empty")
+	}
+	const collectionNameLenMax int = 50
+	const collectionNameLenMin int = 2
+	if len(p.Name) < collectionNameLenMin {
+		fmt.Errorf("Collection name needs to be a minimum of %d chars", collectionNameLenMin)
+	}
+	if len(p.Name) > collectionNameLenMax {
+		fmt.Errorf("Collection name can be a max of %d chars", collectionNameLenMin)
+	}
+
+	var supportedEncodings []uint = []uint{ENCODING_NONE, ENCODING_JSON, ENCODING_GOB}
+	var isValidEncoding bool
+	for _, enc := range supportedEncodings {
+		if p.EncodingType == enc {
+			isValidEncoding = true
+		}
+	}
+	if !isValidEncoding {
+		return fmt.Errorf("Invalid encoding type")
+	}
+
+	if p.NumPartitions < 1 {
+		return fmt.Errorf("Number of paritions requested can not be negative")
 	}
 
 	return nil

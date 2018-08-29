@@ -40,7 +40,7 @@ func Initialize(p ClientParams) error {
 	defer (&client).Unlock()
 
 	if client.isInitialized {
-		return fmt.Errorf("GoFileDb client attempted to initialize more than once")
+		return fmt.Errorf("Attempted to initialie GoFileDb client more than once")
 	}
 
 	// Ensure that the params provided make sense
@@ -117,19 +117,32 @@ func createDirIfNotExist(path string) error {
 	return nil
 }
 
-func (c *Client) FlushAll() error {
-	return os.RemoveAll(c.documentRoot)
+func getFileJson(path string) (map[string]interface{}, error) {
+	file, err := os.Open(docPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// read the file into a json?
+	buff := bytes.NewBuffer(nil)
+	_, err = io.Copy(buff, docFile)
+	if err != nil {
+		return idx, err
+	}
+
+	doc := buff.Bytes() // this is the json doc
+
+	var data map[string]interface{}
+	err = json.Unmarshal(doc, &data)
+
+	return data, err
 }
 
 /********************************************************************************
 * P A R T I T I O N I N G
 *********************************************************************************/
 // This section is used to spread files across multiple directories (so one folder doesn't end up with too many files).
-
-func (c *Client) getPartitionDirName(key string) string {
-	h := getPartitionHash(key, c.numPartitions)
-	return DATA_PARTITION_PREFIX + h
-}
 
 /* This function takes a string, convert each byte to a number representation and adds it, then returns a mod */
 func getPartitionHash(str string, modConstant int) string {

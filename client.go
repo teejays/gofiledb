@@ -16,9 +16,16 @@ import (
 // Client is the primary object that the application interacts with while saving or fetching data
 type Client struct {
 	ClientParams
-	registeredCollections *collectionStore
-	isInitialized         bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
+	collections   *collectionStore
+	isInitialized bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
 	sync.RWMutex
+}
+
+type ClientParams struct {
+	documentRoot       string // documentRoot is the absolute path to the directory that can be used for storing the files/data
+	numPartitions      int    // numPartitions determines how many sub-folders should the package create inorder to partition the data
+	ignorePreviousData bool
+	enableGzip         bool
 }
 
 type collectionStore struct {
@@ -26,33 +33,37 @@ type collectionStore struct {
 	sync.RWMutex
 }
 
+func NewClientParams(documentRoot string, numPartitions int) ClientParams {
+	var params ClientParams = ClientParams{
+		documentRoot:  documentRoot,
+		numPartitions: numPartitions,
+	}
+	return params
+}
+
 /*** Local Getters ***/
 
-func (c *ClientParams) getDocumentRoot() string {
+func (c *Client) getDocumentRoot() string {
 	return c.documentRoot
 }
-
-func (c *Client) getRegisteredCollections() *collectionStore {
-	return c.registeredCollections
+func (c *Client) getIsInitialized() bool {
+	return c.isInitialized
 }
-
-func (c *Client) setRegisteredCollections(cl *collectionStore) {
-	c.registeredCollections = cl
+func (c *Client) getCollections() *collectionStore {
+	return c.collections
 }
-
+func (c *Client) setCollections(cl *collectionStore) {
+	c.collections = cl
+}
 func (c *Client) getCollectionByName(collectionName string) (*Collection, error) {
-	c.registeredCollections.RLock()
-	defer c.registeredCollections.RUnlock()
+	c.collections.RLock()
+	defer c.collections.RUnlock()
 
-	cl, hasKey := c.registeredCollections.Store[collectionName]
+	cl, hasKey := c.collections.Store[collectionName]
 	if !hasKey {
 		return nil, ErrCollectionDoesNotExist
 	}
 	return &cl, nil
-}
-
-func (c *Client) getIsInitialized() bool {
-	return c.isInitialized
 }
 func (c *Client) Destroy() error {
 	// remove everything related to this client, and refresh it
@@ -61,6 +72,100 @@ func (c *Client) Destroy() error {
 		return err
 	}
 	c = &Client{}
+	return nil
+}
+func (c *Client) FlushAll() error {
+	return os.RemoveAll(c.documentRoot)
+}
+
+/*** Add Collection ***/
+
+func (c *Client) AddCollection(p CollectionProps) error {
+
+	// Sanitize the collection props
+	p = p.sanitize()
+
+	// Validate the collection props
+	err := p.validate()
+	if err != nil {
+		return err
+	}
+
+	// Create a Colelction and add to registered collections
+	var cl Collection
+	cl.CollectionProps = p
+
+	// Don't repeat collection names
+	c.registeredCollections.RLock()
+	_, hasKey := c.registeredCollections.Store[p.Name]
+	c.registeredCollections.RUnlock()
+	if hasKey {
+		return fmt.Errorf("A collection with name %s already exists", p.Name)
+	}
+
+	// Create the required dir paths for this collection
+	cl.DirPath = c.getDirPathForCollection(p.Name)
+	// create the dirs for the collection
+	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME))
+	if err != nil {
+		return err
+	}
+	// for indexes
+	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME, "index"))
+	if err != nil {
+		return err
+	}
+	err = createDirIfNotExist(joinPath(cl.DirPath, DATA_DIR_NAME))
+	if err != nil {
+		return err
+	}
+	// Initialize the IndexStore, which stores info on the indexes associated with this Collection
+	cl.IndexStore.Store = make(map[string]IndexInfo)
+
+	// Register the Collection
+
+	c.registeredCollections.Lock()
+	defer c.registeredCollections.Unlock()
+
+	// Initialize the collection store if not initialized (but it should already be initialized because of the Initialize() function)
+	if c.registeredCollections.Store == nil {
+		c.registeredCollections.Store = make(map[string]Collection)
+	}
+	c.registeredCollections.Store[p.Name] = cl
+
+	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Client) RemoveCollection(collectionName string) error {
+
+	cl, err := c.getCollectionByName(collectionName)
+	if err != nil {
+		return err
+	}
+
+	// Unregister the collection from the Client's Collection Store
+	c.registeredCollections.Lock()
+	defer c.registeredCollections.Unlock()
+	clog.Infof("Removing collection registration...")
+	delete(c.registeredCollections.Store, collectionName)
+
+	err = c.setGlobalMetaStruct("registered_collections.gob", c.registeredCollections.Store)
+	if err != nil {
+		return err
+	}
+
+	// Delete all the data & meta dirs for that collection
+	clog.Infof("Deleting data at %s...", cl.DirPath)
+	err = os.RemoveAll(cl.DirPath)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -184,6 +289,7 @@ func (c *Client) getGlobalMetaStruct(metaName string, v interface{}) error {
 /** Searchers **/
 // Todo: search()
 func (c *Client) Search(collectionName string, query string) ([]interface{}, error) {
+
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
@@ -193,6 +299,7 @@ func (c *Client) Search(collectionName string, query string) ([]interface{}, err
 }
 
 func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
+
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
@@ -218,16 +325,14 @@ func (c *Client) getDirPathForCollection(collectionName string) string {
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 
+func (c *Client) getPartitionDirName(key string) string {
+	h := getPartitionHash(key, c.numPartitions)
+	return DATA_PARTITION_PREFIX + h
+}
+
 /********************************************************************************
 * C L I E N T  P A R A M S
 *********************************************************************************/
-
-type ClientParams struct {
-	documentRoot       string // DocumentRoot is the absolute path to the directory that can be used for storing the files/data
-	numPartitions      int    // NumPartitions determines how many sub-folders should the package create inorder to partition the data
-	ignorePreviousData bool
-	// enableGzip    bool
-}
 
 func (p ClientParams) validate() error {
 	// documentRoot shall not be totally white
@@ -263,12 +368,4 @@ func (p ClientParams) sanitize() ClientParams {
 
 	return p
 
-}
-
-func NewClientParams(documentRoot string, numPartitions int) ClientParams {
-	var params ClientParams = ClientParams{
-		documentRoot:  documentRoot,
-		numPartitions: numPartitions,
-	}
-	return params
 }

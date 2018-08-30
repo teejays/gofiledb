@@ -2,54 +2,193 @@ package gofiledb
 
 import (
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"github.com/teejays/clog"
-	"io"
 	"os"
 	"reflect"
+	"sync"
 )
 
 type (
+	IndexStore struct {
+		Store map[string]IndexInfo
+		sync.RWMutex
+	}
+
 	Index struct {
 		IndexInfo
-		KeyValue map[string][]string // Field value -> all the doc keys
-		ValueKey map[string][]string // DocKey -> all the field values for it (useful when re-indexing...)
+		ValueKeys map[string][]Key // Field value -> all the doc keys
+		KeyValues map[Key][]string // DocKey -> all the field values for it (useful when re-indexing...)
 	}
 
 	IndexInfo struct {
+		CollectionName string
 		FieldLocator   string
 		FieldType      string
 		NumValues      int
 		FilePath       string
-		CollectionName string
+	}
+
+	IndexStoreGobFriendly struct {
+		Store map[string]IndexInfo
 	}
 )
 
-var ErrIndexIsExist error = fmt.Errorf("Index already exists for that field")
+// CollectionStore has issues when being encoded into Gob, because of the sync.RWMutex
+// Therefore, we need to define our own GobEncode/GobDecode functions for it.
+func (s IndexStore) GobEncode() ([]byte, error) {
+
+	_s := IndexStoreGobFriendly{s.Store}
+	buff := bytes.NewBuffer(nil)
+	enc := gob.NewEncoder(buff)
+	err := enc.Encode(_s)
+	return buff.Bytes(), err
+}
+
+func (s *IndexStore) GobDecode([]byte) error {
+	var _s IndexStoreGobFriendly
+
+	buff := bytes.NewBuffer(nil)
+	dec := gob.NewDecoder(buff)
+	err := dec.Decode(_s)
+	if err != nil {
+		return err
+	}
+	s.Store = _s.Store
+	return nil
+}
+
+var ErrIndexIsExist error = fmt.Errorf("Index already exists")
 var ErrIndexIsNotExist error = fmt.Errorf("Index does not exist")
 
-func (idx Index) addDocByPath(docKey, docPath string) (Index, error) {
+func NewIndex(collectionName string, fieldLocator string, filePath string) *Index {
+	var idx Index
+
+	idx.CollectionName = collectionName
+	idx.FieldLocator = fieldLocator
+	idx.FilePath = filePath
+	idx.ValueKeys = make(map[string][]Key)
+	idx.KeyValues = make(map[Key][]string)
+
+	return &idx
+
+}
+
+func (idx *Index) build(dataPath string) error {
+
+	// open the data dir, which has all the partition dirs
+	dataDir, err := os.Open(dataPath)
+	if err != nil {
+		return err
+	}
+	defer dataDir.Close()
+
+	// get all the names of the partition dirs so we can open them
+	partitionDirNames, err := dataDir.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+
+	// for each partition dir, open it, make sures it's a Dir, and get all the files within it.
+	for _, pDirName := range partitionDirNames {
+
+		pDirPath := joinPath(dataPath, pDirName)
+		fileInfo, err := os.Stat(pDirPath)
+		if err != nil {
+			return err
+		}
+		if !fileInfo.IsDir() {
+			clog.Warnf("%s: not a directory", pDirPath)
+			continue
+		}
+
+		pDir, err := os.Open(pDirPath)
+		if err != nil {
+			return err
+		}
+		defer pDir.Close()
+
+		docNames, err := pDir.Readdirnames(-1)
+		if err != nil {
+			return err
+		}
+
+		// open each of the doc, and add it to index
+		for _, docName := range docNames {
+
+			docPath := joinPath(pDirPath, docName)
+
+			key, err := getKeyFromFileName(docName)
+			if err != nil {
+				return err
+			}
+			err = idx.addDoc(key, docPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (idx *Index) save() error {
+	// Save the index file.. but first json encode it
+	idxJson, err := json.Marshal(idx)
+	if err != nil {
+		return err
+	}
+
+	idxFile, err := os.Create(idx.FilePath)
+	if err != nil {
+		return err
+	}
+	defer idxFile.Close()
+
+	_, err = idxFile.Write(idxJson)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (idx *Index) addDoc(k Key, docPath string) error {
 
 	docMap, err := getFileJson(docPath)
 	if err != nil {
-		return idx, nil
+		return nil
 	}
 
-	idx, err = idx.addData(docKey, docMap)
+	err = idx.addData(k, docMap)
 	if err != nil {
-		return idx, err
+		return err
 	}
 
-	return idx, nil
+	return nil
 }
 
-func (idx Index) addData(docKey string, docMap map[string]interface{}) (Index, error) {
+func (idx *Index) addData(k Key, data map[string]interface{}) error {
+
+	// Remove the existing data in the index for this Key
+	// Remove the data from the ValueKeys map
+	oldValues := idx.KeyValues[k]
+	for _, v := range oldValues {
+		for i, _k := range idx.ValueKeys[v] {
+			if _k == k {
+				idx.ValueKeys[v] = append(idx.ValueKeys[v][:i], idx.ValueKeys[v][i+1:]...)
+			}
+		}
+	}
+	// Reset the KeyValues Map for k
+	idx.KeyValues[k] = []string{}
 
 	// Get the field values
-	values, err := GetNestedFieldValuesOfStruct(docMap, idx.FieldLocator)
+	values, err := GetNestedFieldValuesOfStruct(data, idx.FieldLocator)
 	if err != nil {
-		return idx, err
+		return err
 	}
 
 	// Each of the 'values' correspond to the value for this doc for the given field
@@ -68,18 +207,18 @@ func (idx Index) addData(docKey string, docMap map[string]interface{}) (Index, e
 
 			// make sure that the field of this value is the same as what we expect
 			if idx.FieldType != reflect.TypeOf(v_i).Kind().String() {
-				return idx, fmt.Errorf("Field locator %s corresponds to more than one data type. Cannot create an index.", idx.FieldLocator)
+				return fmt.Errorf("Field locator %s corresponds to more than one data type. Cannot create an index.", idx.FieldLocator)
 			}
 			// add values to maps
-			idx.KeyValue[v_str] = append(idx.KeyValue[v_str], docKey)
-			idx.ValueKey[docKey] = append(idx.ValueKey[docKey], v_str)
+			idx.ValueKeys[v_str] = append(idx.ValueKeys[v_str], k)
+			idx.KeyValues[k] = append(idx.KeyValues[k], v_str)
 
 		}
 	}
 
-	idx.NumValues = len(idx.KeyValue)
+	idx.NumValues = len(idx.ValueKeys)
 
-	return idx, nil
+	return nil
 }
 
 // Todo: removeIndex()

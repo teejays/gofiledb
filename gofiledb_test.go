@@ -36,7 +36,7 @@ var userCollectionProps CollectionProps = CollectionProps{
 	NumPartitions:         1,
 }
 
-var mock_user_1_key string = "mock_user_1_key"
+var mock_user_1_key Key = 1
 var mock_user_1_data User = User{
 	UserId:  1234,
 	Name:    "John Doe",
@@ -45,7 +45,7 @@ var mock_user_1_data User = User{
 	Org:     Org{1},
 }
 
-var mock_user_2_key string = "mock_user_2_key"
+var mock_user_2_key Key = 2
 var mock_user_2_data User = User{
 	UserId:  2,
 	Name:    "Jane Does",
@@ -161,7 +161,7 @@ func TestSetSructOverwrite(t *testing.T) {
 	}
 }
 
-func assertUserDataByKey(key string, expectedData interface{}) error {
+func assertUserDataByKey(key Key, expectedData interface{}) error {
 	client := GetClient()
 
 	var data User

@@ -5,10 +5,12 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"github.com/teejays/clog"
+	"regexp"
+	//"github.com/teejays/clog"
 	"io"
 	"io/ioutil"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -17,8 +19,6 @@ import (
 * E N T I T I E S
 *********************************************************************************/
 
-var ErrCollectionDoesNotExist = fmt.Errorf("Collection not found")
-
 const (
 	ENCODING_NONE uint = iota
 	ENCODING_JSON
@@ -26,6 +26,11 @@ const (
 )
 
 type (
+	collectionStore struct {
+		Store map[string]Collection
+		sync.RWMutex
+	}
+
 	Collection struct {
 		CollectionProps
 		DirPath    string
@@ -38,40 +43,9 @@ type (
 		EnableGzipCompression bool
 		NumPartitions         int
 	}
-
-	IndexStore struct {
-		Store map[string]IndexInfo
-		sync.RWMutex
-	}
-
-	collectionIndexStoreGob struct {
-		Store map[string]IndexInfo
-	}
 )
 
-// CollectionStore has issues when being encoded into Gob, because of the sync.RWMutex
-// Therefore, we need to define our own GobEncode/GobDecode functions for it.
-func (s *IndexStore) GobEncode() ([]byte, error) {
-
-	_s := collectionIndexStoreGob{s.Store}
-	buff := bytes.NewBuffer(nil)
-	enc := gob.NewEncoder(buff)
-	err := enc.Encode(_s)
-	return buff.Bytes(), err
-}
-
-func (s *IndexStore) GobDecode([]byte) error {
-	var s collectionIndexStoreGob
-
-	buff := bytes.NewBuffer(nil)
-	dec := gob.NewDecoder(buff)
-	err := dec.Decode(s)
-	if err != nil {
-		return err
-	}
-	s.Store = _s.Store
-	return nil
-}
+var ErrCollectionDoesNotExist = fmt.Errorf("Collection not found")
 
 /********************************************************************************
 * C O L L E C T I O N  <-> I N D E X
@@ -91,73 +65,34 @@ func (cl *Collection) addIndex(fieldLocator string) error {
 	}
 
 	// Go through all the docs in the collection and create the maps...
-	var index Index
-	index.FieldLocator = fieldLocator
-	index.KeyValue = make(map[string][]string)
-	index.ValueKey = make(map[string][]string)
+	idx := NewIndex(cl.Name, fieldLocator, cl.getIndexFilePath(fieldLocator))
 
 	// get path for where all the collection data is
 	dataDirPath := joinPath(cl.DirPath, DATA_DIR_NAME)
+	err := idx.build(dataDirPath)
 
-	// open the data dir, which has all the partition dirs
-	dataDir, err := os.Open(dataDirPath)
-	if err != nil {
-		return err
-	}
-	defer dataDir.Close()
-
-	// get all the names of the partition dirs so we can open them
-	partitionDirNames, err := dataDir.Readdirnames(-1)
+	err = idx.save()
 	if err != nil {
 		return err
 	}
 
-	// for each partition dir, open it, make sures it's a Dir, and get all the files within it.
-	for _, pDirName := range partitionDirNames {
-
-		pDirPath := joinPath(dataDirPath, pDirName)
-		fileInfo, err := os.Stat(pDirPath)
-		if err != nil {
-			return err
-		}
-		if !fileInfo.IsDir() {
-			clog.Warnf("%s: not a directory", pDirPath)
-			continue
-		}
-
-		pDir, err := os.Open(pDirPath)
-		if err != nil {
-			return err
-		}
-		defer pDir.Close()
-
-		docNames, err := pDir.Readdirnames(-1)
-		if err != nil {
-			return err
-		}
-
-		// open each of the doc, and add it to index
-		for _, docName := range docNames {
-
-			docPath := joinPath(pDirPath, docName)
-
-			index, err = addDocToExistingIndex(index, docName, docPath)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	err = cl.saveIndex(index)
-	if err != nil {
-		return err
-	}
+	cl.IndexStore.Lock()
+	cl.IndexStore.Store[idx.FieldLocator] = idx.IndexInfo
+	cl.IndexStore.Unlock()
 
 	return nil
 
 }
 
-func (cl *Collection) addDocToIndexes(docKey string) error {
+func (cl *Collection) getIndexFilePath(fieldLocator string) string {
+	return joinPath(cl.getIndexDirPath(), fieldLocator)
+}
+
+func (cl *Collection) getIndexDirPath() string {
+	return joinPath(cl.DirPath, META_DIR_NAME, "index")
+}
+
+func (cl *Collection) addDocToIndexes(k Key) error {
 
 	// get all the indexes
 	indexStore := cl.IndexStore.Store
@@ -169,44 +104,20 @@ func (cl *Collection) addDocToIndexes(docKey string) error {
 			return err
 		}
 
-		idx, err = idx.addDocByPath(docKey, cl.getFilePath(key))
+		err = idx.addDoc(k, cl.getFilePath(k))
 		if err != nil {
 			return err
 		}
 
-		err = cl.saveIndex(idx)
+		err = idx.save()
 		if err != nil {
 			return err
 		}
+
+		cl.IndexStore.Lock()
+		cl.IndexStore.Store[idx.FieldLocator] = idx.IndexInfo
+		cl.IndexStore.Unlock()
 	}
-
-	return nil
-}
-
-func (cl *Collection) saveIndex(idx Index) error {
-
-	cl.IndexStore.Lock()
-	defer cl.IndexStore.Unlock()
-
-	// Save the index file.. but first json encode it
-	idxJson, err := json.Marshal(idx)
-	if err != nil {
-		return err
-	}
-
-	idxPath := joinPath(cl.DirPath, META_DIR_NAME, "index", idx.FieldLocator)
-	idxFile, err := os.Create(idxPath)
-	if err != nil {
-		return err
-	}
-	defer idxFile.Close()
-
-	_, err = idxFile.Write(idxJson)
-	if err != nil {
-		return err
-	}
-
-	cl.IndexStore.Store[idx.FieldLocator] = idx.IndexInfo
 
 	return nil
 }
@@ -255,7 +166,7 @@ func (cl *Collection) getIndex(fieldLocator string) (Index, error) {
 	return idx, nil
 }
 
-func (cl *Collection) indexIsExist(fieldLocator string) bool {
+func (cl *Collection) isIndexExist(fieldLocator string) bool {
 	cl.IndexStore.RLock()
 	defer cl.IndexStore.RUnlock()
 
@@ -264,45 +175,25 @@ func (cl *Collection) indexIsExist(fieldLocator string) bool {
 }
 
 /********************************************************************************
-* C L I E N T  <->  C O L L E C T I O N
-*********************************************************************************/
-
-func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
-	collectionName = strings.TrimSpace(collectionName)
-	collectionName = strings.ToLower(collectionName)
-
-	_, err := c.getCollectionByName(collectionName)
-
-	if err == ErrCollectionDoesNotExist {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-
-}
-
-/********************************************************************************
 * W R I T E R S
 *********************************************************************************/
 
-func (cl *Collection) set(key string, data []byte) error {
+func (cl *Collection) set(k Key, data []byte) error {
 
 	// create the partition dir if it doesn't exist already
-	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key))
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k))
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
 		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
 	}
-	path := cl.getFilePath(key)
+	path := cl.getFilePath(k)
 
 	err = ioutil.WriteFile(path, data, FILE_PERM)
 	if err != nil {
 		return fmt.Errorf("error while writing file: %s", err)
 	}
 
-	err = cl.reIndexWithDoc(key)
+	err = cl.addDocToIndexes(k)
 	if err != nil {
 		return err
 	}
@@ -310,7 +201,7 @@ func (cl *Collection) set(key string, data []byte) error {
 	return nil
 }
 
-func (cl *Collection) setFromStruct(key string, v interface{}) error {
+func (cl *Collection) setFromStruct(k Key, v interface{}) error {
 
 	var data []byte
 	var err error
@@ -331,17 +222,17 @@ func (cl *Collection) setFromStruct(key string, v interface{}) error {
 		data = buff.Bytes()
 	}
 
-	return cl.set(key, data)
+	return cl.set(k, data)
 }
 
-func (cl *Collection) setFromReader(key string, src io.Reader) error {
+func (cl *Collection) setFromReader(k Key, src io.Reader) error {
 	// create the partition dir if it doesn't exist already
-	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key))
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k))
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
 		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
 	}
-	path := cl.getFilePath(key)
+	path := cl.getFilePath(k)
 
 	// open the file (copied from https://golang.org/src/io/ioutil/ioutil.go?s=2534:2602#L69)
 	file, err := os.Create(path)
@@ -353,7 +244,7 @@ func (cl *Collection) setFromReader(key string, src io.Reader) error {
 		return err
 	}
 
-	err = cl.reIndexWithDoc(key)
+	err = cl.addDocToIndexes(k)
 	if err != nil {
 		return err
 	}
@@ -365,13 +256,13 @@ func (cl *Collection) setFromReader(key string, src io.Reader) error {
 * R E A D E R S
 *********************************************************************************/
 
-func (cl *Collection) getFile(key string) (*os.File, error) {
-	path := cl.getFilePath(key)
+func (cl *Collection) getFile(k Key) (*os.File, error) {
+	path := cl.getFilePath(k)
 	return os.Open(path)
 }
 
-func (cl *Collection) getFileData(key string) ([]byte, error) {
-	file, err := cl.getFile(key)
+func (cl *Collection) getFileData(k Key) ([]byte, error) {
+	file, err := cl.getFile(k)
 	if err != nil {
 		return nil, err
 	}
@@ -387,10 +278,10 @@ func (cl *Collection) getFileData(key string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (cl *Collection) getIntoStruct(key string, dest interface{}) error {
+func (cl *Collection) getIntoStruct(k Key, dest interface{}) error {
 
 	if cl.EncodingType == ENCODING_JSON {
-		data, err := cl.getFileData(key)
+		data, err := cl.getFileData(k)
 		if err != nil {
 			return err
 		}
@@ -398,7 +289,7 @@ func (cl *Collection) getIntoStruct(key string, dest interface{}) error {
 	}
 
 	if cl.EncodingType == ENCODING_GOB {
-		file, err := cl.getFile(key)
+		file, err := cl.getFile(k)
 		if err != nil {
 			return err
 		}
@@ -410,8 +301,8 @@ func (cl *Collection) getIntoStruct(key string, dest interface{}) error {
 	return fmt.Errorf("Encoding logic for the encoding type not implemented")
 }
 
-func (cl *Collection) getIntoWriter(key string, dest io.Writer) error {
-	file, err := cl.getFile(key)
+func (cl *Collection) getIntoWriter(k Key, dest io.Writer) error {
+	file, err := cl.getFile(k)
 	if err != nil {
 		return err
 	}
@@ -429,12 +320,30 @@ func (cl *Collection) getIntoWriter(key string, dest io.Writer) error {
 * O T H E R S
 *********************************************************************************/
 
-func (cl *Collection) getFilePath(key string) string {
-	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(key), key)
+func (cl *Collection) getFilePath(k Key) string {
+	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k), cl.getFileName(k))
 }
 
-func (cl *Collection) getPartitionDirName(key string) string {
-	h := getPartitionHash(key, cl.NumPartitions)
+func (cl *Collection) getFileName(k Key) string {
+	return cl.Name + "_" + DOC_FILE_NAME_PREFIX + k.String()
+}
+
+func getKeyFromFileName(fileName string) (Key, error) {
+	var k Key
+	parts := strings.Split(fileName, DOC_FILE_NAME_PREFIX)
+	if len(parts) != 2 {
+		return k, fmt.Errorf("Screw you Talha. Check how you get Key from filenames.")
+	}
+	keyInt, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return k, err
+	}
+	k = Key(keyInt)
+	return k, nil
+}
+
+func (cl *Collection) getPartitionDirName(k Key) string {
+	h := getPartitionHash(k.String(), cl.NumPartitions)
 	return DATA_PARTITION_PREFIX + h
 }
 
@@ -452,6 +361,14 @@ func (p CollectionProps) validate() error {
 	if strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("Collection name cannot be empty")
 	}
+
+	// Special Characters check
+	rgx := regexp.MustCompile("[^a-zA-Z0-9]+")
+	hasSpecialCharacters := rgx.MatchString(p.Name)
+	if hasSpecialCharacters {
+		fmt.Errorf("Collection name cannot have any special characters")
+	}
+
 	const collectionNameLenMax int = 50
 	const collectionNameLenMin int = 2
 	if len(p.Name) < collectionNameLenMin {

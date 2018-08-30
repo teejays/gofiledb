@@ -63,7 +63,7 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 	}
 
 	// execute the plan
-	var resultKeys map[string]bool // value type int is just arbitrary so we can store some temp info when find intersects later
+	var resultKeys map[Key]bool // value type int is just arbitrary so we can store some temp info when find intersects later
 	for step, qCondition := range qPlan.ConditionsPlan {
 		step++ // so we start with step = 1
 
@@ -77,15 +77,15 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 			for _, conditionValue := range qCondition.ConditionValues {
 
 				// for each condition, get the values (doc keys) that satisfy the condition
-				docIds := idx.KeyValue[conditionValue]
+				keys := idx.ValueKeys[conditionValue]
 				if step == 1 {
-					// first time we're getting the docs, just add them to results
-					for _, dId := range docIds {
-						resultKeys[dId] = true
+					// first time we're getting the keys, just add them to results
+					for _, k := range keys {
+						resultKeys[k] = true
 					}
 
 				} else {
-					resultKeys = findIntersectionMapSlice(resultKeys, docIds)
+					resultKeys = findIntersectingKeysOfMapSlice(resultKeys, keys)
 				}
 
 			}
@@ -114,9 +114,9 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 }
 
 // find intersection of a and b
-func findIntersectionMapSlice(a map[string]bool, b []string) map[string]bool {
+func findIntersectingKeysOfMapSlice(a map[Key]bool, b []Key) map[Key]bool {
 
-	var intersect map[string]bool = make(map[string]bool)
+	var intersect map[Key]bool = make(map[Key]bool)
 	// loop through the bs, add them to intersect if they are in a
 	for _, bVal := range b {
 		if hasKey := a[bVal]; hasKey {
@@ -158,7 +158,7 @@ func (cl *Collection) getConditionsPlan(query string) (queryConditionsPlan, erro
 		qPlanCondition.FieldLocator = fieldLocator
 		qPlanCondition.ConditionValues = []string{fieldCondition}
 		qPlanCondition.QueryPosition = i
-		qPlanCondition.HasIndex = cl.indexIsExist(fieldLocator)
+		qPlanCondition.HasIndex = cl.isIndexExist(fieldLocator)
 
 		if qPlanCondition.HasIndex {
 			idxInfo, inCache := indexInfoCache[fieldLocator]

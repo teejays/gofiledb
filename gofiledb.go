@@ -3,8 +3,9 @@
 package gofiledb
 
 import (
-	"fmt"
-	"log"
+	"bytes"
+	"encoding/json"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,83 +16,22 @@ const (
 	META_DIR_NAME string = "meta"
 
 	DATA_PARTITION_PREFIX string = "partition_"
+	DOC_FILE_NAME_PREFIX  string = "doc_"
 
 	FILE_PERM = 0660
 	DIR_PERM  = 0750
 )
 
-// client is the instance of the Client struct
-var client Client
+type Key int64
 
-// GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
-func GetClient() *Client {
-	if !(&client).isInitialized {
-		log.Fatal("GoFiledb client fetched called without initializing the client")
-	}
-	return &client
-}
+// type DocWrapper struct {
+// 	Key Key
+// 	Doc interface{}
+// }
 
-// InitClient setsup the package for use by an appliction. This should be called before the client can be used.
-func Initialize(p ClientParams) error {
-	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
-	// which could end up initializing the client twice and might overwrite the param values. Hence, we use a lock
-	// to avoid that situation.
-	(&client).Lock()
-	defer (&client).Unlock()
-
-	if client.isInitialized {
-		return fmt.Errorf("Attempted to initialie GoFileDb client more than once")
-	}
-
-	// Ensure that the params provided make sense
-	err := p.validate()
-	if err != nil {
-		return err
-	}
-
-	// Sanitize the params so they'r emore standard
-	p = p.sanitize()
-
-	// Set the client
-	client.ClientParams = p
-
-	if p.ignorePreviousData {
-		err = client.Destroy()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Initialize the CollectionStore
-	registeredCollections := new(collectionStore) // registeredCollections is a pointer to collectionStore
-	registeredCollections.Lock()
-	defer registeredCollections.Unlock()
-
-	// Create the neccesary folders
-	err = createDirIfNotExist(p.getDocumentRoot())
-	if err != nil {
-		return err
-	}
-	err = createDirIfNotExist(joinPath(p.getDocumentRoot(), DATA_DIR_NAME))
-	if err != nil {
-		return err
-	}
-	err = createDirIfNotExist(joinPath(p.getDocumentRoot(), META_DIR_NAME))
-	if err != nil {
-		return err
-	}
-
-	registeredCollections.Store = make(map[string]Collection) // default case
-	err = client.getGlobalMetaStruct("registered_collections.gob", &registeredCollections.Store)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	client.setRegisteredCollections(registeredCollections)
-
-	client.isInitialized = true
-
-	return nil
+func (k Key) String() string {
+	// return string(k)
+	return strconv.FormatInt(int64(k), 10)
 }
 
 /********************************************************************************
@@ -118,7 +58,7 @@ func createDirIfNotExist(path string) error {
 }
 
 func getFileJson(path string) (map[string]interface{}, error) {
-	file, err := os.Open(docPath)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -126,9 +66,9 @@ func getFileJson(path string) (map[string]interface{}, error) {
 
 	// read the file into a json?
 	buff := bytes.NewBuffer(nil)
-	_, err = io.Copy(buff, docFile)
+	_, err = io.Copy(buff, file)
 	if err != nil {
-		return idx, err
+		return nil, err
 	}
 
 	doc := buff.Bytes() // this is the json doc
@@ -152,6 +92,10 @@ func getPartitionHash(str string, modConstant int) string {
 	}
 	return strconv.Itoa(sum % modConstant)
 }
+
+// func getFileNameFromKey(k Key) string {
+// 	return DOC_FILE_NAME_PREFIX + k.String()
+// }
 
 /********************************************************************************
 * Collection Store

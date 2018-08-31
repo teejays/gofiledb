@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 /********************************************************************************
@@ -390,14 +391,34 @@ func (c *Client) GetIntoWriter(collectionName string, k Key, dest io.Writer) err
 * Q U E R Y (B E T A)
 *********************************************************************************/
 
-func (c *Client) Search(collectionName string, query string) ([]interface{}, error) {
+func (c *Client) Search(collectionName string, query string) (SearchResponse, error) {
+
+	start := time.Now()
+	var resp SearchResponse = SearchResponse{}
+
+	defer func() {
+		resp.TimeTaken = time.Now().Sub(start)
+	}()
+
+	resp.Query = query
+	resp.Collection = collectionName
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
-		return nil, err
+		resp.Error = err
+		return resp, err
 	}
 
-	return cl.search(query)
+	resp.Result, err = cl.search(query)
+	if err != nil {
+		resp.Error = err
+		return resp, err
+	}
+
+	resp.NumDocuments = len(resp.Result)
+
+	return resp, nil
+
 }
 
 func (c *Client) AddIndex(collectionName string, fieldLocator string) error {

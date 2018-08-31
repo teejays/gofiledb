@@ -257,23 +257,32 @@ func TestSearch(t *testing.T) {
 		t.Error(err)
 	}
 	if err != ErrIndexNotImplemented {
-		t.Error(fmt.Errorf("Expected ErrIndexNotImplemented got: %s", err))
+		t.Error(fmt.Errorf("Expected ErrIndexNotImplemented got: %v, %s", results, err))
 	}
 
 }
 
-func assertSearchResult(results []interface{}, expectedLength int, names []string) error {
-	if len(results) != expectedLength {
-		return fmt.Errorf("number of results returned %d do not match the expected number %d", len(results), expectedLength)
+func assertSearchResult(resp SearchResponse, expectedLength int, names []string) error {
+	if resp.NumDocuments != expectedLength {
+		return fmt.Errorf("number of results returned %d do not match the expected number %d", resp.NumDocuments, expectedLength)
 	}
-	for i, n := range names {
-		r, ok := results[i].(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("error asserting the row %d of results as a map[string]interface{}", i+1)
+	for _, n := range names {
+
+		var exists bool
+		for i, _r := range resp.Result {
+			r, ok := _r.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("error asserting the row %d of results as a map[string]interface{}", i+1)
+			}
+			if n == r["Name"] {
+				exists = true
+			}
+
 		}
-		if n != r["Name"] {
-			return fmt.Errorf("the row %d of result did not match expected. Expected name field %s, got %s.", i+1, n, r["Name"])
+		if !exists {
+			return fmt.Errorf("Expected a document with name %s but did not find it in result.", n)
 		}
+
 	}
 
 	return nil

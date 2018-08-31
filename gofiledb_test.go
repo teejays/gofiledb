@@ -45,13 +45,31 @@ var mock_user_1_data User = User{
 	Org:     Org{1},
 }
 
+var mock_user_1b_key Key = 1
+var mock_user_1b_data User = User{
+	UserId:  1234,
+	Name:    "John Doe B",
+	Address: "123 Main Street, ME 12345",
+	Age:     30,
+	Org:     Org{1},
+}
+
 var mock_user_2_key Key = 2
 var mock_user_2_data User = User{
-	UserId:  2,
+	UserId:  493,
 	Name:    "Jane Does",
 	Address: "123 Main Street, ME 12345",
 	Age:     25,
 	Org:     Org{261},
+}
+
+var mock_user_3_key Key = 3
+var mock_user_3_data User = User{
+	UserId:  973,
+	Name:    "Joe Dies",
+	Address: "123 Main Street, ME 12345",
+	Age:     26,
+	Org:     Org{1},
 }
 
 /********************************************************************************
@@ -67,7 +85,6 @@ func TestInitClient(t *testing.T) {
 	var document_root string = home + "/" + "gofiledb_test"
 	params := ClientParams{
 		documentRoot:       document_root,
-		numPartitions:      50,
 		ignorePreviousData: true,
 	}
 	err = Initialize(params)
@@ -83,7 +100,7 @@ func TestGetClient(t *testing.T) {
 	GetClient()
 }
 
-func TestAddCollection(t *testing.T) {
+func TestAddCollectionOne(t *testing.T) {
 	client := GetClient()
 
 	err := client.AddCollection(userCollectionProps)
@@ -146,9 +163,24 @@ func TestSetStructSecond(t *testing.T) {
 	}
 }
 
+func TestSetStructThird(t *testing.T) {
+	key := mock_user_3_key
+	data := mock_user_3_data
+
+	client := GetClient()
+	err := client.SetStruct(userCollectionName, key, data)
+	if err != nil {
+		t.Error(err)
+	}
+	err = assertUserDataByKey(key, data)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestSetSructOverwrite(t *testing.T) {
-	key := mock_user_2_key
-	data := mock_user_1_data
+	key := mock_user_1b_key
+	data := mock_user_1b_data
 
 	client := GetClient()
 	err := client.SetStruct(userCollectionName, key, data)
@@ -178,13 +210,73 @@ func assertUserDataByKey(key Key, expectedData interface{}) error {
 
 func TestGetStruct(t *testing.T) {
 
-	key := mock_user_2_key
-	data := mock_user_1_data
+	key := mock_user_1b_key
+	data := mock_user_1b_data
 
 	err := assertUserDataByKey(key, data)
 	if err != nil {
 		t.Error(err)
 	}
+}
+
+func TestSearch(t *testing.T) {
+	c := GetClient()
+	results, err := c.Search(userCollectionName, "Age:25")
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = assertSearchResult(results, 1, []string{"Jane Does"})
+	if err != nil {
+		fmt.Println(results)
+		t.Error(err)
+	}
+
+	results, err = c.Search(userCollectionName, "Org.OrgId:1")
+	if err != nil {
+		t.Error(err)
+	}
+	err = assertSearchResult(results, 2, []string{"Joe Dies", "John Doe B"})
+	if err != nil {
+		fmt.Println(results)
+		t.Error(err)
+	}
+
+	results, err = c.Search(userCollectionName, "Org.OrgId:1+Age:26")
+	if err != nil {
+		t.Error(err)
+	}
+	err = assertSearchResult(results, 1, []string{"Joe Dies"})
+	if err != nil {
+		fmt.Println(results)
+		t.Error(err)
+	}
+
+	results, err = c.Search(userCollectionName, "Org.OrgId:1+Age:26+Name:Tom")
+	if err != nil && err != ErrIndexNotImplemented {
+		t.Error(err)
+	}
+	if err != ErrIndexNotImplemented {
+		t.Error(fmt.Errorf("Expected ErrIndexNotImplemented got: %s", err))
+	}
+
+}
+
+func assertSearchResult(results []interface{}, expectedLength int, names []string) error {
+	if len(results) != expectedLength {
+		return fmt.Errorf("number of results returned %d do not match the expected number %d", len(results), expectedLength)
+	}
+	for i, n := range names {
+		r, ok := results[i].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("error asserting the row %d of results as a map[string]interface{}", i+1)
+		}
+		if n != r["Name"] {
+			return fmt.Errorf("the row %d of result did not match expected. Expected name field %s, got %s.", i+1, n, r["Name"])
+		}
+	}
+
+	return nil
 }
 
 func TestRemoveCollection(t *testing.T) {

@@ -133,36 +133,60 @@ func (idx *Index) build(dataPath string) error {
 
 	return nil
 }
+func (idx *Index) addDocDir(path string) error {
 
-func (idx *Index) save() error {
-	// Save the index file.. but first json encode it
-	idxJson, err := json.Marshal(idx)
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !fileInfo.IsDir() {
+		return fmt.Errorf("directory not found at %s", path)
+	}
+
+	pDir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer pDir.Close()
+
+	docNames, err := pDir.Readdirnames(-1)
+	if err != nil {
+		pDir.Close()
+		return err
+	}
+
+	// Close the directory since we've read the file names
+	err = pDir.Close()
 	if err != nil {
 		return err
 	}
 
-	idxFile, err := os.Create(idx.FilePath)
-	if err != nil {
-		return err
-	}
-	defer idxFile.Close()
+	// open each of the doc, and add it to index
+	for _, docName := range docNames {
 
-	_, err = idxFile.Write(idxJson)
-	if err != nil {
-		return err
+		docPath := joinPath(path, docName)
+
+		key, err := getKeyFromFileName(docName)
+		if err != nil {
+			return err
+		}
+
+		err = idx.addDoc(key, docPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
+func (idx *Index) addDoc(k Key, path string) error {
 
-func (idx *Index) addDoc(k Key, docPath string) error {
-
-	docMap, err := getFileJson(docPath)
+	data, err := getFileJson(path)
 	if err != nil {
 		return nil
 	}
 
-	err = idx.addData(k, docMap)
+	err = idx.addData(k, data)
 	if err != nil {
 		return err
 	}
@@ -221,4 +245,23 @@ func (idx *Index) addData(k Key, data map[string]interface{}) error {
 	return nil
 }
 
-// Todo: removeIndex()
+func (idx *Index) save() error {
+	// Save the index file.. but first json encode it
+	idxJson, err := json.Marshal(idx)
+	if err != nil {
+		return err
+	}
+
+	idxFile, err := os.Create(idx.FilePath)
+	if err != nil {
+		return err
+	}
+	defer idxFile.Close()
+
+	_, err = idxFile.Write(idxJson)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

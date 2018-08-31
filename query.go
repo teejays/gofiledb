@@ -49,6 +49,8 @@ func (qs queryConditionsPlan) Swap(i, j int) {
 	qs[j] = temp
 }
 
+var ErrIndexNotImplemented error = fmt.Errorf("Searching is only supported on indexed fields. No index found on one of the fields")
+
 // Todo: add order by
 // e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
 func (cl *Collection) search(query string) ([]interface{}, error) {
@@ -63,7 +65,7 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 	}
 
 	// execute the plan
-	var resultKeys map[Key]bool // value type int is just arbitrary so we can store some temp info when find intersects later
+	var resultKeys map[Key]bool = make(map[Key]bool) // value type int is just arbitrary so we can store some temp info when find intersects later
 	for step, qCondition := range qPlan.ConditionsPlan {
 		step++ // so we start with step = 1
 
@@ -91,7 +93,8 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 			}
 
 		} else { // If there is no index, then we'll have to open all the docs.. :/ Let's not support it for now
-			return nil, fmt.Errorf("Searching is only supported on indexed fields. No index found for field %s", qCondition.FieldLocator)
+			//return nil, fmt.Errorf("Searching is only supported on indexed fields. No index found for field %s", qCondition.FieldLocator)
+			return nil, ErrIndexNotImplemented
 
 		}
 
@@ -100,7 +103,7 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 	// After this for loop, we should have a map of all the doc keys we want to return
 
 	var results []interface{}
-	for docKey, _ := range resultKeys {
+	for docKey := range resultKeys {
 		var doc map[string]interface{}
 		err := cl.getIntoStruct(docKey, &doc)
 		if err != nil {
@@ -147,7 +150,7 @@ func (cl *Collection) getConditionsPlan(query string) (queryConditionsPlan, erro
 
 		// We need to split it by field locator and the condition value
 		// Understand this part of condition
-		_qP := strings.SplitN(qP, KV_SEPARATOR, 1)
+		_qP := strings.SplitN(qP, KV_SEPARATOR, 2)
 		if len(_qP) < 2 {
 			return qConditionsPlan, fmt.Errorf("Invalid Query around `%s`", qP)
 		}

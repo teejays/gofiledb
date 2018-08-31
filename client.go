@@ -35,6 +35,8 @@ const REGISTER_COLLECTION_FILE_NAME = "registered_collections.gob"
 
 // client is the instance of the Client struct
 var client Client
+var ErrClientAlreadyInitialized error = fmt.Errorf("Attempted to initialie GoFileDb client more than once")
+var ErrClientNotInitialized error = fmt.Errorf("GoFiledb client fetched called without initializing the client")
 
 /*** Initializers ***/
 
@@ -47,7 +49,7 @@ func Initialize(p ClientParams) error {
 	defer (&client).Unlock()
 
 	if client.isInitialized {
-		return fmt.Errorf("Attempted to initialie GoFileDb client more than once")
+		return ErrClientAlreadyInitialized
 	}
 
 	// Ensure that the params provided make sense
@@ -86,6 +88,7 @@ func Initialize(p ClientParams) error {
 		return err
 	}
 
+	// Initialize the collection store
 	collections.Store = make(map[string]Collection) // default case
 	err = client.getGlobalMetaStruct("registered_collections.gob", &collections.Store)
 	if err != nil && !os.IsNotExist(err) {
@@ -428,10 +431,7 @@ func (p ClientParams) validate() error {
 	if strings.TrimSpace(p.documentRoot) == "" {
 		return fmt.Errorf("Empty documentRoot field provided")
 	}
-	// numPartitions shall be positive
-	if p.numPartitions < 1 {
-		return fmt.Errorf("Invalid numPartitions value provided: %d", p.numPartitions)
-	}
+
 	// documentRoot shall exist as a directory
 	info, err := os.Stat(p.documentRoot)
 	if os.IsNotExist(err) {

@@ -181,7 +181,7 @@ func (cl *Collection) isIndexExist(fieldLocator string) bool {
 func (cl *Collection) set(k Key, data []byte) error {
 
 	// create the partition dir if it doesn't exist already
-	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k))
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, getPartitionDirName(k, cl.NumPartitions))
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
 		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
@@ -227,7 +227,7 @@ func (cl *Collection) setFromStruct(k Key, v interface{}) error {
 
 func (cl *Collection) setFromReader(k Key, src io.Reader) error {
 	// create the partition dir if it doesn't exist already
-	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k))
+	dirPath := joinPath(cl.DirPath, DATA_DIR_NAME, getPartitionDirName(k, cl.NumPartitions))
 	err := createDirIfNotExist(dirPath)
 	if err != nil {
 		return fmt.Errorf("error while creating the dir at path %s: %s", dirPath, err)
@@ -321,30 +321,11 @@ func (cl *Collection) getIntoWriter(k Key, dest io.Writer) error {
 *********************************************************************************/
 
 func (cl *Collection) getFilePath(k Key) string {
-	return joinPath(cl.DirPath, DATA_DIR_NAME, cl.getPartitionDirName(k), cl.getFileName(k))
+	return joinPath(cl.DirPath, DATA_DIR_NAME, getPartitionDirName(k, cl.NumPartitions), cl.getFileName(k))
 }
 
 func (cl *Collection) getFileName(k Key) string {
 	return cl.Name + "_" + DOC_FILE_NAME_PREFIX + k.String()
-}
-
-func getKeyFromFileName(fileName string) (Key, error) {
-	var k Key
-	parts := strings.Split(fileName, DOC_FILE_NAME_PREFIX)
-	if len(parts) != 2 {
-		return k, fmt.Errorf("Screw you Talha. Check how you get Key from filenames.")
-	}
-	keyInt, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return k, err
-	}
-	k = Key(keyInt)
-	return k, nil
-}
-
-func (cl *Collection) getPartitionDirName(k Key) string {
-	h := getPartitionHash(k.String(), cl.NumPartitions)
-	return DATA_PARTITION_PREFIX + h
 }
 
 func (p CollectionProps) sanitize() CollectionProps {

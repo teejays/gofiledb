@@ -34,6 +34,24 @@ func (k Key) String() string {
 	return strconv.FormatInt(int64(k), 10)
 }
 
+func (k Key) getPartitionHash(numPartitions int) string {
+	return strconv.Itoa(int(k) % numPartitions)
+}
+
+func getKeyFromFileName(fileName string) (Key, error) {
+	var k Key
+	parts := strings.Split(fileName, DOC_FILE_NAME_PREFIX)
+	if len(parts) != 2 {
+		return k, fmt.Errorf("Screw you Talha. Check how you get Key from filenames.")
+	}
+	keyInt, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return k, err
+	}
+	k = Key(keyInt)
+	return k, nil
+}
+
 /********************************************************************************
 * H E L P E R 																	*
 *********************************************************************************/
@@ -84,7 +102,12 @@ func getFileJson(path string) (map[string]interface{}, error) {
 *********************************************************************************/
 // This section is used to spread files across multiple directories (so one folder doesn't end up with too many files).
 
-/* This function takes a string, convert each byte to a number representation and adds it, then returns a mod */
+func getPartitionDirName(k Key, numPartitions int) string {
+	h := k.getPartitionHash(numPartitions)
+	return DATA_PARTITION_PREFIX + h
+}
+
+/* Deprecated: This function takes a string, convert each byte to a number representation and adds it, then returns a mod */
 func getPartitionHash(str string, modConstant int) string {
 	var sum int
 	for i := 0; i < len(str); i++ {

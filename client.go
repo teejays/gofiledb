@@ -26,10 +26,10 @@ type Client struct {
 }
 
 type ClientParams struct {
-	documentRoot       string // documentRoot is the absolute path to the directory that can be used for storing the files/data
-	numPartitions      int    // numPartitions determines how many sub-folders should the package create inorder to partition the data
+	documentRoot string // documentRoot is the absolute path to the directory that can be used for storing the files/data
+	// numPartitions      int    // numPartitions determines how many sub-folders should the package create inorder to partition the data
 	ignorePreviousData bool
-	enableGzip         bool
+	// enableGzip         bool
 }
 
 const REGISTER_COLLECTION_FILE_NAME = "registered_collections.gob"
@@ -244,11 +244,6 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	return nil
 }
 
-func (c *Client) getDirPathForCollection(collectionName string) string {
-	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName}
-	return strings.Join(dirs, string(os.PathSeparator))
-}
-
 func (c *Client) RemoveCollection(collectionName string) error {
 
 	cl, err := c.getCollectionByName(collectionName)
@@ -369,13 +364,13 @@ func (c *Client) GetStruct(collectionName string, k Key, dest interface{}) error
 	return cl.getIntoStruct(k, dest)
 }
 
-func (c *Client) GetStructIfExists(collectionName string, k Key, dest interface{}) error {
+func (c *Client) GetStructIfExists(collectionName string, k Key, dest interface{}) (bool, error) {
 
 	err := c.GetStruct(collectionName, k, dest)
 	if os.IsNotExist(err) {
-		return nil
+		return false, nil
 	}
-	return err
+	return true, err
 }
 
 func (c *Client) GetIntoWriter(collectionName string, k Key, dest io.Writer) error {
@@ -435,14 +430,18 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 * N A V I G A T I O N   H E L P E R S
 *********************************************************************************/
 
+func (c *Client) getDirPathForCollection(collectionName string) string {
+	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName}
+	return strings.Join(dirs, string(os.PathSeparator))
+}
+
 /********************************************************************************
 * C L I E N T  P A R A M S
 *********************************************************************************/
 
-func NewClientParams(documentRoot string, numPartitions int) ClientParams {
+func NewClientParams(documentRoot string) ClientParams {
 	var params ClientParams = ClientParams{
-		documentRoot:  documentRoot,
-		numPartitions: numPartitions,
+		documentRoot: documentRoot,
 	}
 	return params
 }

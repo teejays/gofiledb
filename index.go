@@ -47,10 +47,10 @@ func (s IndexStore) GobEncode() ([]byte, error) {
 	return buff.Bytes(), err
 }
 
-func (s *IndexStore) GobDecode([]byte) error {
+func (s *IndexStore) GobDecode(b []byte) error {
 	var _s IndexStoreGobFriendly
 
-	buff := bytes.NewBuffer(nil)
+	buff := bytes.NewBuffer(b)
 	dec := gob.NewDecoder(buff)
 	err := dec.Decode(_s)
 	if err != nil {

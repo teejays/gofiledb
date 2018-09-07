@@ -1,6 +1,7 @@
 package gofiledb
 
 import (
+	"bytes"
 	"encoding/gob"
 	"fmt"
 	"github.com/teejays/clog"
@@ -24,18 +25,42 @@ type Client struct {
 }
 
 type ClientParams struct {
-	// Required
 	documentRoot string // documentRoot is the absolute path to the directory that can be used for storing the files/data
+}
 
-	// Optional
-	overwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
-	// numPartitions         int  // number of partition folders for the data. This is overwritten by the same parameter collection params.
-	// enableGzip         bool
+type clientParamsGob struct {
+	DocumentRoot string
 }
 
 type ClientInitOptions struct {
 	ClientParams
 	overwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
+}
+
+func (p ClientParams) GobEncode() ([]byte, error) {
+	var pGob clientParamsGob = clientParamsGob{
+		DocumentRoot: p.documentRoot,
+	}
+	buff := bytes.NewBuffer(nil)
+	enc := gob.NewEncoder(buff)
+	err := enc.Encode(pGob)
+	if err != nil {
+		return nil, err
+	}
+	return buff.Bytes(), nil
+}
+
+func (p *ClientParams) GobDecode(b []byte) error {
+
+	buff := bytes.NewBuffer(b)
+	dec := gob.NewDecoder(buff)
+	var pGob clientParamsGob
+	err := dec.Decode(&pGob)
+	if err != nil {
+		return err
+	}
+	p.documentRoot = pGob.DocumentRoot
+	return nil
 }
 
 const DEFAULT_CLIENT_NUM_PARTITIONS int = 2
@@ -135,7 +160,7 @@ func Initialize(p ClientInitOptions) error {
 
 	globalClient = client
 
-	return nil
+	return SaveGlobalClientToDisk()
 }
 
 func SaveGlobalClientToDisk() error {

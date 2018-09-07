@@ -1,11 +1,12 @@
 package gofiledb
 
 import (
-	"flag"
+	//"flag"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
+	//"strconv"
+	"github.com/teejays/clog"
 	"strings"
 	"sync"
 )
@@ -19,6 +20,7 @@ func (a *BoolAtomic) GetVal() bool {
 	a.RLock()
 	val := a.Val
 	a.RUnlock()
+	return val
 }
 
 func (a *BoolAtomic) SetVal(v bool) {
@@ -50,12 +52,12 @@ var ErrIsRepartitioning = fmt.Errorf("The system is already busy repartitioning 
 
 func Repartition(params RepartitionParams) error {
 
-	if !(&isRepartitioning.CompareAndSet(true)) {
+	if !((&isRepartitioning).CompareAndSet(true)) {
 		return ErrIsRepartitioning
 	}
 
 	if strings.TrimSpace(params.DataDirectory) == "" {
-		return fmt.Errorf("invalid data directory provided: %s", root)
+		return fmt.Errorf("invalid data directory provided: %s", params.DataDirectory)
 	}
 
 	if params.NumPartitionsNew < 1 {
@@ -75,7 +77,7 @@ func Repartition(params RepartitionParams) error {
 		// Ensure that we're looking into a folder, and not a file.
 		info, err := os.Stat(path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if !info.IsDir() {
 			clog.Warnf("Repartition: found a non-directory file `%s` at %s. Expected to find only partition folders", partition, params.DataDirectory)
@@ -83,12 +85,15 @@ func Repartition(params RepartitionParams) error {
 		}
 
 		// From the folder, get all the files
-		files := getSubfiles(path)
+		files, err := getSubfiles(path)
+		if err != nil {
+			return err
+		}
 		for _, f := range files {
 			// Ensure that we're looking at a file, and not a dir.
 			info, err := os.Stat(joinPath(path, f))
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if info.IsDir() {
 				clog.Warnf("Repartition: found a directory `%s` at %s. Expected to find only documents files", f, path)
@@ -125,15 +130,16 @@ func Repartition(params RepartitionParams) error {
 		}
 	}
 
-	&isRepartitioning.CompareAndSet(false)
+	(&isRepartitioning).CompareAndSet(false)
 
+	return nil
 }
 
 // getSubfiles returns all the names of the files/directories at a given path
 func getSubfiles(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("failed opening directory: %s", err)
+		return nil, err
 	}
 	defer file.Close()
 
@@ -143,5 +149,5 @@ func getSubfiles(path string) ([]string, error) {
 		folders = append(folders, name)
 	}
 
-	return folders
+	return folders, nil
 }

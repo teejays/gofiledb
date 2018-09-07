@@ -5,6 +5,7 @@ package gofiledb
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strconv"

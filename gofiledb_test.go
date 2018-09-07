@@ -27,6 +27,9 @@ type Org struct {
 	OrgId int64
 }
 
+var mockInitOptions ClientInitOptions = ClientInitOptions{
+	overwritePreviousData: true,
+}
 var userCollectionName string = "users"
 
 var userCollectionProps CollectionProps = CollectionProps{
@@ -83,11 +86,9 @@ func TestInitClient(t *testing.T) {
 	}
 	var home string = usr.HomeDir
 	var document_root string = home + "/" + "gofiledb_test"
-	params := ClientParams{
-		documentRoot:       document_root,
-		ignorePreviousData: true,
-	}
-	err = Initialize(params)
+	mockInitOptions.documentRoot = document_root
+
+	err = Initialize(mockInitOptions)
 	if err != nil {
 		log.Fatalf("[TestInitClient] %v", err)
 	}

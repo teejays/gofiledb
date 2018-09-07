@@ -6,7 +6,6 @@ import (
 	"github.com/teejays/clog"
 	"io"
 	"log"
-
 	"os"
 	"strings"
 	"sync"
@@ -17,63 +16,71 @@ import (
 * C L I E N T
 *********************************************************************************/
 
-// Client is the primary object that the application interacts with while saving or fetching data
+// Client is the primary object that the external application interacts with while saving or fetching data
 type Client struct {
 	ClientParams
 	collections   *collectionStore
 	isInitialized bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
-	sync.RWMutex
 }
 
 type ClientParams struct {
+	// Required
 	documentRoot string // documentRoot is the absolute path to the directory that can be used for storing the files/data
-	// numPartitions      int    // numPartitions determines how many sub-folders should the package create inorder to partition the data
-	ignorePreviousData bool
+
+	// Optional
+	overwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
+	// numPartitions         int  // number of partition folders for the data. This is overwritten by the same parameter collection params.
 	// enableGzip         bool
 }
 
+type ClientInitOptions struct {
+	ClientParams
+	overwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
+}
+
+const DEFAULT_CLIENT_NUM_PARTITIONS int = 2
 const REGISTER_COLLECTION_FILE_NAME = "registered_collections.gob"
 
 // client is the instance of the Client struct
-var client Client
+var globalClient Client
+var globalClientLock sync.RWMutex
+
 var ErrClientAlreadyInitialized error = fmt.Errorf("Attempted to initialie GoFileDb client more than once")
 var ErrClientNotInitialized error = fmt.Errorf("GoFiledb client fetched called without initializing the client")
 
 /*** Initializers ***/
 
 // Initialize setsup the package for use by an appliction. This should be called before the client can be used.
-func Initialize(p ClientParams) error {
+func Initialize(p ClientInitOptions) error {
 	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
 	// which could end up initializing the client twice and might overwrite the param values. Hence, we use a lock
 	// to avoid that situation.
-	(&client).Lock()
-	defer (&client).Unlock()
+	globalClientLock.Lock()
+	defer globalClientLock.Unlock()
 
-	if client.isInitialized {
+	if globalClient.isInitialized {
 		return ErrClientAlreadyInitialized
 	}
 
 	// Ensure that the params provided make sense
-	err := p.validate()
+	err := p.ClientParams.validate()
 	if err != nil {
 		return err
 	}
 
 	// Sanitize the params so they'r emore standard
-	p = p.sanitize()
+	p.ClientParams = p.ClientParams.sanitize()
 
-	// Set the client
-	client.ClientParams = p
+	var client Client
+	client.ClientParams = p.ClientParams
 
-	if p.ignorePreviousData {
+	// If overwrite previousdata flag is passed, we shoudl delete existing data at document root
+	if p.overwritePreviousData {
 		err = client.Destroy()
 		if err != nil {
 			return err
 		}
 	}
-
-	// Initialize the CollectionStore
-	collections := new(collectionStore) // collections is a pointer to collectionStore
 
 	// Create the neccesary folders
 	err = createDirIfNotExist(p.documentRoot)
@@ -89,26 +96,58 @@ func Initialize(p ClientParams) error {
 		return err
 	}
 
-	// Initialize the collection store
-	collections.Store = make(map[string]Collection) // default case
-	err = client.getGlobalMetaStruct("registered_collections.gob", &collections.Store)
+	// Check if we already have a client that is intitilzed at this Document Root
+	err = client.getGlobalMetaStruct("globalClient.gob", &client)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	client.setCollections(collections)
+	// By this point, either the existing client has been loaded to client var, or not.
+	// If client.isInitialized == true, then the existing client has been loaded.
+	if client.isInitialized {
+		clog.Warnf("Existing GoFileDb client found at %s. Loading it.", p.documentRoot)
+		// Ensure that the loaded params match the new params provided
+		// For now, the only param that matters is document root.
+		if client.documentRoot != p.documentRoot {
+			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client's documentRoot is set to %s. This is an unexpected error.", p.documentRoot, client.documentRoot)
+		}
+		if client.collections == nil {
+			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client does not have an initialized collection data. This is an unexpected error.", p.documentRoot)
+		}
+
+		return nil
+	}
+
+	// Code here corresponds to the case when we're creating a new Client
+	// Initialize the CollectionStore
+	collections := new(collectionStore)             // collections is a pointer to collectionStore
+	collections.Store = make(map[string]Collection) // default case
+
+	// Initialize the collection store
+	// err = client.getGlobalMetaStruct("registered_collections.gob", &collections.Store)
+	// if err != nil && !os.IsNotExist(err) {
+	// 	return err
+	// }
+
+	client.collections = collections
 
 	client.isInitialized = true
+
+	globalClient = client
 
 	return nil
 }
 
+func SaveGlobalClientToDisk() error {
+	return (&globalClient).setGlobalMetaStruct("globalClient.gob", globalClient)
+}
+
 // GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
 func GetClient() *Client {
-	if !(&client).isInitialized {
+	if !(&globalClient).isInitialized {
 		log.Fatal("GoFiledb client fetched called without initializing the client")
 	}
-	return &client
+	return &globalClient
 }
 
 /*** Local Getters & Setters ***/
@@ -122,9 +161,10 @@ func (c *Client) getIsInitialized() bool {
 func (c *Client) getCollections() *collectionStore {
 	return c.collections
 }
-func (c *Client) setCollections(cl *collectionStore) {
-	c.collections = cl
-}
+
+// func (c *Client) setCollections(cl *collectionStore) {
+// 	c.collections = cl
+// }
 func (c *Client) getCollectionByName(collectionName string) (*Collection, error) {
 	c.collections.RLock()
 	defer c.collections.RUnlock()
@@ -235,8 +275,14 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	}
 	c.collections.Store[p.Name] = cl
 
-	// Save the data so it persists
+	// Save the data so it persists (might deprecate as we start storing the entire client)
 	err = c.setGlobalMetaStruct(REGISTER_COLLECTION_FILE_NAME, c.collections.Store)
+	if err != nil {
+		return err
+	}
+
+	// Save the client to disk
+	err = SaveGlobalClientToDisk()
 	if err != nil {
 		return err
 	}
@@ -257,6 +303,7 @@ func (c *Client) RemoveCollection(collectionName string) error {
 	clog.Infof("Removing collection registration...")
 	delete(c.collections.Store, collectionName)
 
+	// Save the data so it persists (might deprecate as we start storing the entire client)
 	err = c.setGlobalMetaStruct("registered_collections.gob", c.collections.Store)
 	if err != nil {
 		return err
@@ -265,6 +312,12 @@ func (c *Client) RemoveCollection(collectionName string) error {
 	// Delete all the data & meta dirs for that collection
 	clog.Infof("Deleting data at %s...", cl.DirPath)
 	err = os.RemoveAll(cl.DirPath)
+	if err != nil {
+		return err
+	}
+
+	// Save the client to disk
+	err = SaveGlobalClientToDisk()
 	if err != nil {
 		return err
 	}
@@ -423,7 +476,14 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 		return err
 	}
 
-	return cl.addIndex(fieldLocator)
+	err = cl.addIndex(fieldLocator)
+	if err != nil {
+		return err
+	}
+
+	// Save the client to disk
+	return SaveGlobalClientToDisk()
+
 }
 
 /********************************************************************************

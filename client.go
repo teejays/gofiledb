@@ -170,7 +170,7 @@ func SaveGlobalClientToDisk() error {
 // GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
 func GetClient() *Client {
 	if !(&globalClient).isInitialized {
-		log.Fatal("GoFiledb client fetched called without initializing the client")
+		log.Panic("GoFiledb client fetched called without initializing the client")
 	}
 	return &globalClient
 }
@@ -196,7 +196,7 @@ func (c *Client) getCollectionByName(collectionName string) (*Collection, error)
 
 	cl, hasKey := c.collections.Store[collectionName]
 	if !hasKey {
-		return nil, ErrCollectionDoesNotExist
+		return nil, ErrCollectionIsNotExist
 	}
 	return &cl, nil
 }
@@ -356,7 +356,7 @@ func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 
 	_, err := c.getCollectionByName(collectionName)
 
-	if err == ErrCollectionDoesNotExist {
+	if err == ErrCollectionIsNotExist {
 		return false, nil
 	}
 	if err != nil {

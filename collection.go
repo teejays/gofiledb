@@ -45,7 +45,8 @@ type (
 	}
 )
 
-var ErrCollectionDoesNotExist = fmt.Errorf("Collection not found")
+var ErrCollectionIsNotExist = fmt.Errorf("Collection not found")
+var ErrCollectionIsExist = fmt.Errorf("Collection with this name already exists")
 
 /********************************************************************************
 * C O L L E C T I O N  <-> I N D E X

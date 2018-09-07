@@ -27,9 +27,13 @@ type Org struct {
 	OrgId int64
 }
 
-var mockInitOptions ClientInitOptions = ClientInitOptions{
+var mockInitOptions1 ClientInitOptions = ClientInitOptions{
 	overwritePreviousData: true,
 }
+var mockInitOptions2 ClientInitOptions = ClientInitOptions{
+	overwritePreviousData: false,
+}
+
 var userCollectionName string = "users"
 
 var userCollectionProps CollectionProps = CollectionProps{
@@ -75,20 +79,46 @@ var mock_user_3_data User = User{
 	Org:     Org{1},
 }
 
+var documentRoot string
+
+func init() {
+	usr, err := user.Current()
+	if err != nil {
+		log.Fatalf("[Init] %v", err)
+	}
+	documentRoot = joinPath(usr.HomeDir, "gofiledb_test")
+}
+
 /********************************************************************************
 * T E S T S 																	*
 *********************************************************************************/
 
-func TestInitClient(t *testing.T) {
-	usr, err := user.Current()
-	if err != nil {
-		log.Fatalf("[TestInitClient] %v", err)
-	}
-	var home string = usr.HomeDir
-	var document_root string = home + "/" + "gofiledb_test"
-	mockInitOptions.documentRoot = document_root
+/*
+ * Client Tests
+ */
 
-	err = Initialize(mockInitOptions)
+// TestGetClientPreInit: Makes sure we get a ClientNotInitialized Error when getting a client which has not been initialized
+func TestGetClientPreInit(t *testing.T) {
+	defer func() {
+		// it should panic
+		if r := recover(); r == nil {
+			t.Error("Expected Panic with ErrClientNotInitialized error but got nil")
+			return
+		} else if r.(string) != ErrClientNotInitialized.Error() {
+			t.Errorf("Expected Panic with ErrClientNotInitialized error but got: %s", r)
+		}
+	}()
+
+	_ = GetClient()
+
+}
+
+// TestInitializeClient: Makes sure we can initialize a fresh copy of a client at documentRoot
+func TestInitializeClient(t *testing.T) {
+
+	mockInitOptions1.documentRoot = documentRoot
+
+	err := Initialize(mockInitOptions1)
 	if err != nil {
 		log.Fatalf("[TestInitClient] %v", err)
 	}
@@ -97,8 +127,39 @@ func TestInitClient(t *testing.T) {
 
 }
 
+// TestInitializeClient: Makes sure we can initialize a fresh copy of a client at documentRoot
+func TestInitializeClientTwo(t *testing.T) {
+
+	mockInitOptions2.documentRoot = documentRoot
+
+	err := Initialize(mockInitOptions2)
+	if err != nil && err != ErrClientAlreadyInitialized {
+		log.Fatalf("[TestInitClient] %v", err)
+	}
+	if err == nil {
+		t.Error("Expected ErrClientAlreadyInitialized error but got nil")
+	}
+
+}
+
+// TestGetClient: Makes sure we can get the initialized client
 func TestGetClient(t *testing.T) {
-	GetClient()
+	_ = GetClient()
+}
+
+/*
+ * Collection Tests
+ */
+
+func TestIsCollectionExistFail(t *testing.T) {
+	client := GetClient()
+	exists, err := client.IsCollectionExist(userCollectionProps.Name)
+	if err != nil {
+		t.Error(err)
+	}
+	if exists {
+		t.Error("Expected collection to not exist, but it exists")
+	}
 }
 
 func TestAddCollectionOne(t *testing.T) {
@@ -121,6 +182,10 @@ func TestIsCollectionExist(t *testing.T) {
 	}
 }
 
+/*
+ * Index Tests
+ */
+
 func TestAddIndex(t *testing.T) {
 	client := GetClient()
 	err := client.AddIndex(userCollectionName, "Age")
@@ -133,6 +198,10 @@ func TestAddIndex(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+/*
+ * Data Write
+ */
 
 func TestSetStructFirst(t *testing.T) {
 	key := mock_user_1_key
@@ -209,6 +278,10 @@ func assertUserDataByKey(key Key, expectedData interface{}) error {
 	return nil
 }
 
+/*
+ * Data Read
+ */
+
 func TestGetStruct(t *testing.T) {
 
 	key := mock_user_1b_key
@@ -219,6 +292,10 @@ func TestGetStruct(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+/*
+ * Data Search
+ */
 
 func TestSearch(t *testing.T) {
 	c := GetClient()

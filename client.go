@@ -14,6 +14,50 @@ import (
 )
 
 /********************************************************************************
+* C L I E N T  P A R A M S
+*********************************************************************************/
+
+func NewClientParams(documentRoot string) ClientParams {
+	var params ClientParams = ClientParams{
+		documentRoot: documentRoot,
+	}
+	return params
+}
+
+func (p ClientParams) validate() error {
+	// documentRoot shall not be totally white
+	if strings.TrimSpace(p.documentRoot) == "" {
+		return fmt.Errorf("Empty documentRoot field provided")
+	}
+
+	// documentRoot shall exist as a directory
+	info, err := os.Stat(p.documentRoot)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("no directory found at path %s", p.documentRoot)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s path is not a directory", p.documentRoot)
+	}
+
+	return nil
+}
+
+func (p ClientParams) sanitize() ClientParams {
+
+	// remove trailing path separator characters (e.g. / in Linux) from the documentRoot
+	if len(p.documentRoot) > 0 && p.documentRoot[len(p.documentRoot)-1] == os.PathSeparator {
+		p.documentRoot = p.documentRoot[:len(p.documentRoot)-1]
+		return p.sanitize()
+	}
+
+	// create a new folder at the path provided
+	p.documentRoot = p.documentRoot + string(os.PathSeparator) + "gofiledb_warehouse"
+
+	return p
+
+}
+
+/********************************************************************************
 * C L I E N T
 *********************************************************************************/
 
@@ -33,8 +77,8 @@ type clientParamsGob struct {
 }
 
 type ClientInitOptions struct {
-	ClientParams
-	overwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
+	DocumentRoot          string
+	OverwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
 }
 
 func (p ClientParams) GobEncode() ([]byte, error) {
@@ -87,20 +131,22 @@ func Initialize(p ClientInitOptions) error {
 		return ErrClientAlreadyInitialized
 	}
 
+	var cParams ClientParams = NewClientParams(p.DocumentRoot)
+
 	// Ensure that the params provided make sense
-	err := p.ClientParams.validate()
+	err := cParams.validate()
 	if err != nil {
 		return err
 	}
 
 	// Sanitize the params so they'r emore standard
-	p.ClientParams = p.ClientParams.sanitize()
+	cParams = cParams.sanitize()
 
 	var client Client
-	client.ClientParams = p.ClientParams
+	client.ClientParams = cParams
 
-	// If overwrite previousdata flag is passed, we shoudl delete existing data at document root
-	if p.overwritePreviousData {
+	// If overwrite previousdata flag is passed, we should delete existing data at document root
+	if p.OverwritePreviousData {
 		err = client.Destroy()
 		if err != nil {
 			return err
@@ -108,15 +154,15 @@ func Initialize(p ClientInitOptions) error {
 	}
 
 	// Create the neccesary folders
-	err = createDirIfNotExist(p.documentRoot)
+	err = createDirIfNotExist(client.ClientParams.documentRoot)
 	if err != nil {
 		return err
 	}
-	err = createDirIfNotExist(joinPath(p.documentRoot, DATA_DIR_NAME))
+	err = createDirIfNotExist(joinPath(client.ClientParams.documentRoot, DATA_DIR_NAME))
 	if err != nil {
 		return err
 	}
-	err = createDirIfNotExist(joinPath(p.documentRoot, META_DIR_NAME))
+	err = createDirIfNotExist(joinPath(client.ClientParams.documentRoot, META_DIR_NAME))
 	if err != nil {
 		return err
 	}
@@ -130,14 +176,14 @@ func Initialize(p ClientInitOptions) error {
 	// By this point, either the existing client has been loaded to client var, or not.
 	// If client.isInitialized == true, then the existing client has been loaded.
 	if client.isInitialized {
-		clog.Warnf("Existing GoFileDb client found at %s. Loading it.", p.documentRoot)
+		clog.Warnf("Existing GoFileDb client found at %s. Loading it.", p.DocumentRoot)
 		// Ensure that the loaded params match the new params provided
 		// For now, the only param that matters is document root.
-		if client.documentRoot != p.documentRoot {
-			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client's documentRoot is set to %s. This is an unexpected error.", p.documentRoot, client.documentRoot)
+		if client.documentRoot != p.DocumentRoot {
+			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client's documentRoot is set to %s. This is an unexpected error.", p.DocumentRoot, client.documentRoot)
 		}
 		if client.collections == nil {
-			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client does not have an initialized collection data. This is an unexpected error.", p.documentRoot)
+			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client does not have an initialized collection data. This is an unexpected error.", p.DocumentRoot)
 		}
 
 		return nil
@@ -265,7 +311,7 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	_, hasKey := c.collections.Store[p.Name]
 	c.collections.RUnlock()
 	if hasKey {
-		return fmt.Errorf("A collection with name %s already exists", p.Name)
+		return ErrCollectionIsExist
 	}
 
 	// Create the required dir paths for this collection
@@ -518,48 +564,4 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 func (c *Client) getDirPathForCollection(collectionName string) string {
 	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName}
 	return strings.Join(dirs, string(os.PathSeparator))
-}
-
-/********************************************************************************
-* C L I E N T  P A R A M S
-*********************************************************************************/
-
-func NewClientParams(documentRoot string) ClientParams {
-	var params ClientParams = ClientParams{
-		documentRoot: documentRoot,
-	}
-	return params
-}
-
-func (p ClientParams) validate() error {
-	// documentRoot shall not be totally white
-	if strings.TrimSpace(p.documentRoot) == "" {
-		return fmt.Errorf("Empty documentRoot field provided")
-	}
-
-	// documentRoot shall exist as a directory
-	info, err := os.Stat(p.documentRoot)
-	if os.IsNotExist(err) {
-		return fmt.Errorf("no directory found at path %s", p.documentRoot)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s path is not a directory", p.documentRoot)
-	}
-
-	return nil
-}
-
-func (p ClientParams) sanitize() ClientParams {
-
-	// remove trailing path separator characters (e.g. / in Linux) from the documentRoot
-	if len(p.documentRoot) > 0 && p.documentRoot[len(p.documentRoot)-1] == os.PathSeparator {
-		p.documentRoot = p.documentRoot[:len(p.documentRoot)-1]
-		return p.sanitize()
-	}
-
-	// create a new folder at the path provided
-	p.documentRoot = p.documentRoot + string(os.PathSeparator) + "gofiledb_warehouse"
-
-	return p
-
 }

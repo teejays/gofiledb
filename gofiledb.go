@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/teejays/clog"
 	"io"
 	"os"
 	"strconv"
@@ -66,8 +67,8 @@ func IsNotExist(err error) bool {
 }
 
 func createDirIfNotExist(path string) error {
-
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		clog.Infof("[GoFileDB] Creating dir at: %s", path)
 		err := os.MkdirAll(path, DIR_PERM)
 		if err != nil {
 			return nil

@@ -200,7 +200,9 @@ func (c *Client) getMeta(metaName string, v interface{}) error {
 * C L I E N T  <->  C O L L E C T I O N
 *********************************************************************************/
 
-func (c *Client) AddCollection(p collection.CollectionProps) error {
+func (c *Client) AddCollection(_p CollectionProps) error {
+
+	p := collection.CollectionProps(_p)
 
 	// Sanitize the collection props
 	p = p.Sanitize()

@@ -15,6 +15,17 @@ type ClientInitOptions struct {
 	OverwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
 }
 
+type CollectionProps collection.CollectionProps
+
+const (
+	ENCODING_NONE uint = collection.ENCODING_NONE
+	ENCODING_JSON uint = collection.ENCODING_JSON
+	ENCODING_GOB  uint = collection.ENCODING_GOB
+)
+
+var ErrCollectionIsNotExist = collection.ErrCollectionIsNotExist
+var ErrCollectionIsExist = collection.ErrCollectionIsExist
+
 // Initialize setsup the package for use by an appliction. This should be called before the client can be used.
 func Initialize(p ClientInitOptions) error {
 	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
@@ -102,4 +113,8 @@ func Initialize(p ClientInitOptions) error {
 	}
 
 	return nil
+}
+
+func IsNotExist(err error) bool {
+	return os.IsNotExist(err)
 }

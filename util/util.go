@@ -22,10 +22,6 @@ func JoinPath(dirs ...string) string {
 	return strings.Join(dirs, string(os.PathSeparator))
 }
 
-func IsNotExist(err error) bool {
-	return os.IsNotExist(err)
-}
-
 func CreateDirIfNotExist(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		clog.Infof("[GoFileDB] Creating dir at: %s", path)

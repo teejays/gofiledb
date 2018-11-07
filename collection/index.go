@@ -1,4 +1,4 @@
-package gofiledb
+package collection
 
 import (
 	"bytes"
@@ -6,25 +6,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/teejays/clog"
+	"github.com/teejays/gofiledb/key"
+	"github.com/teejays/gofiledb/util"
 	"os"
 	"reflect"
-	"sync"
 )
 
 type (
-	IndexStore struct {
-		Store map[string]IndexInfo
-		sync.RWMutex
-	}
-
 	Index struct {
 		IndexInfo
-		ValueKeys map[string][]Key // Field value -> all the doc keys
-		KeyValues map[Key][]string // DocKey -> all the field values for it (useful when re-indexing...)
+		ValueKeys map[string][]key.Key // Field value -> all the doc keys
+		KeyValues map[key.Key][]string // DocKey -> all the field values for it (useful when re-indexing...)
 	}
 
 	IndexInfo struct {
 		CollectionName string
+		cl             *Collection // unexported so we don't create a cycle during json Unmarshal
 		FieldLocator   string
 		FieldType      string
 		NumValues      int
@@ -41,6 +38,9 @@ type (
 func (s IndexStore) GobEncode() ([]byte, error) {
 
 	_s := IndexStoreGobFriendly{s.Store}
+	// for _, i := range _s.Store {
+	// 	i.Collection = nil
+	// }
 	buff := bytes.NewBuffer(nil)
 	enc := gob.NewEncoder(buff)
 	err := enc.Encode(_s)
@@ -62,21 +62,41 @@ func (s *IndexStore) GobDecode(b []byte) error {
 
 var ErrIndexIsExist error = fmt.Errorf("Index already exists")
 var ErrIndexIsNotExist error = fmt.Errorf("Index does not exist")
+var ErrIndexHasNoCollection error = fmt.Errorf("Index has no linked parent collection")
 
-func NewIndex(collectionName string, fieldLocator string, filePath string) *Index {
+func (cl *Collection) NewIndex(fieldLocator string) *Index {
 	var idx Index
 
-	idx.CollectionName = collectionName
+	idx.CollectionName = cl.Name
+	idx.cl = cl
 	idx.FieldLocator = fieldLocator
-	idx.FilePath = filePath
-	idx.ValueKeys = make(map[string][]Key)
-	idx.KeyValues = make(map[Key][]string)
+	// idx.FilePath is where the index will be saved on the file for persistence purposes
+	idx.FilePath = util.JoinPath(cl.GetDirPathForIndexes(), fieldLocator)
+	idx.ValueKeys = make(map[string][]key.Key)
+	idx.KeyValues = make(map[key.Key][]string)
 
 	return &idx
 
 }
 
-func (idx *Index) build(dataPath string) error {
+func (idx *Index) getCollection() (*Collection, error) {
+	if idx.cl == nil {
+		return nil, ErrIndexHasNoCollection
+	}
+	return idx.cl, nil
+}
+
+// build builds an index from scratch, going through all the documents one by one.
+func (idx *Index) build() error {
+	clog.Debugf("Building index for '%s' collection at field: %s", idx.CollectionName, idx.FieldLocator)
+
+	cl, err := idx.getCollection()
+	if err != nil {
+		return err
+	}
+
+	// where are all the documents that need to be added?
+	dataPath := cl.getDataPath()
 
 	// open the data dir, which has all the partition dirs
 	dataDir, err := os.Open(dataPath)
@@ -94,7 +114,7 @@ func (idx *Index) build(dataPath string) error {
 	// for each partition dir, open it, make sures it's a Dir, and get all the files within it.
 	for _, pDirName := range partitionDirNames {
 
-		pDirPath := joinPath(dataPath, pDirName)
+		pDirPath := util.JoinPath(dataPath, pDirName)
 		fileInfo, err := os.Stat(pDirPath)
 		if err != nil {
 			return err
@@ -118,13 +138,13 @@ func (idx *Index) build(dataPath string) error {
 		// open each of the doc, and add it to index
 		for _, docName := range docNames {
 
-			docPath := joinPath(pDirPath, docName)
+			docPath := util.JoinPath(pDirPath, docName)
 
-			key, err := getKeyFromFileName(docName)
+			k, err := key.GetKeyFromFileName(docName)
 			if err != nil {
 				return err
 			}
-			err = idx.addDoc(key, docPath)
+			err = idx.addDoc(k, docPath)
 			if err != nil {
 				return err
 			}
@@ -164,14 +184,14 @@ func (idx *Index) addDocDir(path string) error {
 	// open each of the doc, and add it to index
 	for _, docName := range docNames {
 
-		docPath := joinPath(path, docName)
+		docPath := util.JoinPath(path, docName)
 
-		key, err := getKeyFromFileName(docName)
+		k, err := key.GetKeyFromFileName(docName)
 		if err != nil {
 			return err
 		}
 
-		err = idx.addDoc(key, docPath)
+		err = idx.addDoc(k, docPath)
 		if err != nil {
 			return err
 		}
@@ -179,13 +199,29 @@ func (idx *Index) addDocDir(path string) error {
 
 	return nil
 }
-func (idx *Index) addDoc(k Key, path string) error {
+func (idx *Index) addDoc(k key.Key, path string) error {
+	clog.Debugf("Adding document to %s collection in %s index: %s", idx.CollectionName, idx.FieldLocator, k)
+	// Get Collection
 
-	data, err := getFileJson(path)
+	cl, err := idx.getCollection()
 	if err != nil {
-		return nil
+		return err
 	}
 
+	// Ensure that collection is for JSON
+	if cl.EncodingType != ENCODING_JSON {
+		return fmt.Errorf("Indexing only supported for JSON encoded data")
+	}
+
+	// Get the file from collection into a map[string]interface
+	var data map[string]interface{}
+
+	err = cl.GetIntoStruct(k, &data)
+	if err != nil {
+		return err
+	}
+
+	// Add data to the index
 	err = idx.addData(k, data)
 	if err != nil {
 		return err
@@ -194,7 +230,7 @@ func (idx *Index) addDoc(k Key, path string) error {
 	return nil
 }
 
-func (idx *Index) addData(k Key, data map[string]interface{}) error {
+func (idx *Index) addData(k key.Key, data map[string]interface{}) error {
 
 	// Remove the existing data in the index for this Key
 	// Remove the data from the ValueKeys map
@@ -210,7 +246,7 @@ func (idx *Index) addData(k Key, data map[string]interface{}) error {
 	idx.KeyValues[k] = []string{}
 
 	// Get the field values
-	values, err := GetNestedFieldValuesOfStruct(data, idx.FieldLocator)
+	values, err := util.GetNestedFieldValuesOfStruct(data, idx.FieldLocator)
 	if err != nil {
 		return err
 	}
@@ -246,6 +282,8 @@ func (idx *Index) addData(k Key, data map[string]interface{}) error {
 }
 
 func (idx *Index) save() error {
+	clog.Debugf("Saving Index for %s collection on %s field", idx.CollectionName, idx.FieldLocator)
+
 	// Save the index file.. but first json encode it
 	idxJson, err := json.Marshal(idx)
 	if err != nil {

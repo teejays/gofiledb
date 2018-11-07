@@ -1,12 +1,12 @@
 package gofiledb
 
 import (
-	//"flag"
 	"fmt"
+	"github.com/teejays/clog"
+	"github.com/teejays/gofiledb/key"
+	"github.com/teejays/gofiledb/util"
 	"log"
 	"os"
-	//"strconv"
-	"github.com/teejays/clog"
 	"strings"
 	"sync"
 )
@@ -73,7 +73,7 @@ func Repartition(params RepartitionParams) error {
 	// for each partition folder, go inside, copy and move all the files to their new locations
 	for _, partition := range partitionFolders {
 
-		path := joinPath(params.DataDirectory, partition)
+		path := util.JoinPath(params.DataDirectory, partition)
 		// Ensure that we're looking into a folder, and not a file.
 		info, err := os.Stat(path)
 		if err != nil {
@@ -91,7 +91,7 @@ func Repartition(params RepartitionParams) error {
 		}
 		for _, f := range files {
 			// Ensure that we're looking at a file, and not a dir.
-			info, err := os.Stat(joinPath(path, f))
+			info, err := os.Stat(util.JoinPath(path, f))
 			if err != nil {
 				return err
 			}
@@ -102,14 +102,14 @@ func Repartition(params RepartitionParams) error {
 
 			// What should be teh new path of this file? Get the new partition name
 			// but first we need the Key for this file
-			key, err := getKeyFromFileName(f)
+			k, err := key.GetKeyFromFileName(f)
 			if err != nil {
 				return err
 			}
 
-			newPartitionDir := getPartitionDirName(key, params.NumPartitionsNew)
-			oldPath := joinPath(params.DataDirectory, partition)
-			newPath := joinPath(params.DataDirectory, newPartitionDir)
+			newPartitionDir := k.GetPartitionDirName(params.NumPartitionsNew)
+			oldPath := util.JoinPath(params.DataDirectory, partition)
+			newPath := util.JoinPath(params.DataDirectory, newPartitionDir)
 
 			// if the dir doesn't exist, create one
 			if _, err := os.Stat(newPath); os.IsNotExist(err) {
@@ -118,8 +118,8 @@ func Repartition(params RepartitionParams) error {
 			}
 
 			// only move/rename if the path/name is different
-			oldName := joinPath(oldPath, f)
-			newName := joinPath(newPath, f)
+			oldName := util.JoinPath(oldPath, f)
+			newName := util.JoinPath(newPath, f)
 			if oldName != newName {
 				fmt.Printf("Moving file from %s to %s...\n", oldPath, newPath)
 				err := os.Rename(oldName, newName)

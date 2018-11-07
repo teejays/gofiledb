@@ -1,11 +1,13 @@
-package gofiledb
+package collection
 
 import (
 	"fmt"
+	"github.com/teejays/gofiledb/key"
 	"sort"
 	"strings"
-	"time"
 )
+
+var ErrIndexNotImplemented error = fmt.Errorf("Searching is only supported on indexed fields. No index found on one of the fields")
 
 /********************************************************************************
 * E N T I T Y
@@ -50,23 +52,12 @@ func (qs QueryConditionsPlan) Swap(i, j int) {
 	qs[j] = temp
 }
 
-type SearchResponse struct {
-	Collection   string
-	Query        string
-	Error        error
-	TimeTaken    time.Duration
-	NumDocuments int
-	Result       []interface{}
-}
-
 /********************************************************************************
 * S E A R C H
 *********************************************************************************/
 
-var ErrIndexNotImplemented error = fmt.Errorf("Searching is only supported on indexed fields. No index found on one of the fields")
-
 // e.g query: UserId=1+Org.OrgId=1|261+Name=Talha
-func (cl *Collection) search(query string) ([]interface{}, error) {
+func (cl *Collection) Search(query string) ([]interface{}, error) {
 
 	// Plan
 	plan, err := cl.getQueryPlan(query)
@@ -84,7 +75,7 @@ func (cl *Collection) search(query string) ([]interface{}, error) {
 	var results []interface{}
 	for k := range keys {
 		var doc map[string]interface{}
-		err := cl.getIntoStruct(k, &doc)
+		err := cl.GetIntoStruct(k, &doc)
 		if err != nil {
 			return nil, err
 		}
@@ -179,9 +170,9 @@ func (cl *Collection) getConditionsPlanForQuery(query string) (QueryConditionsPl
 * E X E C U T E
 *********************************************************************************/
 
-func (cl *Collection) getKeysForQueryConditionPlan(cPlan QueryConditionsPlan) (map[Key]bool, error) {
+func (cl *Collection) getKeysForQueryConditionPlan(cPlan QueryConditionsPlan) (map[key.Key]bool, error) {
 
-	var resultKeys map[Key]bool = make(map[Key]bool) // value type int is just arbitrary so we can store some temp info when find intersects later
+	var resultKeys map[key.Key]bool = make(map[key.Key]bool) // value type int is just arbitrary so we can store some temp info when find intersects later
 
 	for step, condition := range cPlan {
 
@@ -189,7 +180,7 @@ func (cl *Collection) getKeysForQueryConditionPlan(cPlan QueryConditionsPlan) (m
 
 		// if index, open index
 		if condition.HasIndex {
-			idx, err := cl.getIndex(condition.FieldLocator)
+			idx, err := cl.loadIndex(condition.FieldLocator)
 			if err != nil {
 				return nil, err
 			}
@@ -223,9 +214,9 @@ func (cl *Collection) getKeysForQueryConditionPlan(cPlan QueryConditionsPlan) (m
 }
 
 // find intersection of a and b
-func findIntersectingKeysOfMapSlice(a map[Key]bool, b []Key) map[Key]bool {
+func findIntersectingKeysOfMapSlice(a map[key.Key]bool, b []key.Key) map[key.Key]bool {
 
-	var intersect map[Key]bool = make(map[Key]bool)
+	var intersect map[key.Key]bool = make(map[key.Key]bool)
 	// loop through the bs, add them to intersect if they are in a
 	for _, bVal := range b {
 		if hasKey := a[bVal]; hasKey {

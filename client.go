@@ -5,6 +5,9 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/teejays/clog"
+	"github.com/teejays/gofiledb/collection"
+	"github.com/teejays/gofiledb/key"
+	"github.com/teejays/gofiledb/util"
 	"io"
 	"log"
 	"os"
@@ -13,9 +16,39 @@ import (
 	"time"
 )
 
+const DEFAULT_CLIENT_NUM_PARTITIONS int = 2
+
+// globalClient is the instance of the Client struct
+var globalClient Client
+var globalClientLock sync.RWMutex
+
+// Errors
+var ErrClientAlreadyInitialized error = fmt.Errorf("Attempted to initialie GoFileDb client more than once")
+var ErrClientNotInitialized error = fmt.Errorf("GoFiledb client fetched called without initializing the client")
+
 /********************************************************************************
-* C L I E N T  P A R A M S
+* C L I E N T
 *********************************************************************************/
+
+// Client is the primary object that the external application interacts with while saving or fetching data
+type Client struct {
+	isInitialized bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
+	collections   *collectionStore
+	ClientParams
+}
+
+type collectionStore struct {
+	Store map[string]collection.Collection
+	sync.RWMutex
+}
+
+type ClientParams struct {
+	documentRoot string // documentRoot is the absolute path to the directory that can be used for storing the files/data
+}
+
+type clientParamsGob struct {
+	DocumentRoot string
+}
 
 func NewClientParams(documentRoot string) ClientParams {
 	var params ClientParams = ClientParams{
@@ -57,30 +90,6 @@ func (p ClientParams) sanitize() ClientParams {
 
 }
 
-/********************************************************************************
-* C L I E N T
-*********************************************************************************/
-
-// Client is the primary object that the external application interacts with while saving or fetching data
-type Client struct {
-	ClientParams
-	collections   *collectionStore
-	isInitialized bool // IsInitialized ensures that we don't initialize the client more than once, since doing that could lead to issues
-}
-
-type ClientParams struct {
-	documentRoot string // documentRoot is the absolute path to the directory that can be used for storing the files/data
-}
-
-type clientParamsGob struct {
-	DocumentRoot string
-}
-
-type ClientInitOptions struct {
-	DocumentRoot          string
-	OverwritePreviousData bool // if true, gofiledb will remove all the existing data in the document root
-}
-
 func (p ClientParams) GobEncode() ([]byte, error) {
 	var pGob clientParamsGob = clientParamsGob{
 		DocumentRoot: p.documentRoot,
@@ -107,112 +116,6 @@ func (p *ClientParams) GobDecode(b []byte) error {
 	return nil
 }
 
-const DEFAULT_CLIENT_NUM_PARTITIONS int = 2
-const REGISTER_COLLECTION_FILE_NAME = "registered_collections.gob"
-
-// client is the instance of the Client struct
-var globalClient Client
-var globalClientLock sync.RWMutex
-
-var ErrClientAlreadyInitialized error = fmt.Errorf("Attempted to initialie GoFileDb client more than once")
-var ErrClientNotInitialized error = fmt.Errorf("GoFiledb client fetched called without initializing the client")
-
-/*** Initializers ***/
-
-// Initialize setsup the package for use by an appliction. This should be called before the client can be used.
-func Initialize(p ClientInitOptions) error {
-	// Although rare, it is still possible that two almost simultaneous calls are made to the Initialize function,
-	// which could end up initializing the client twice and might overwrite the param values. Hence, we use a lock
-	// to avoid that situation.
-	globalClientLock.Lock()
-	defer globalClientLock.Unlock()
-
-	if globalClient.isInitialized {
-		return ErrClientAlreadyInitialized
-	}
-
-	var cParams ClientParams = NewClientParams(p.DocumentRoot)
-
-	// Ensure that the params provided make sense
-	err := cParams.validate()
-	if err != nil {
-		return err
-	}
-
-	// Sanitize the params so they'r emore standard
-	cParams = cParams.sanitize()
-
-	var client Client
-	client.ClientParams = cParams
-
-	// If overwrite previousdata flag is passed, we should delete existing data at document root
-	if p.OverwritePreviousData {
-		err = client.Destroy()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Create the neccesary folders
-	err = createDirIfNotExist(client.ClientParams.documentRoot)
-	if err != nil {
-		return err
-	}
-	err = createDirIfNotExist(joinPath(client.ClientParams.documentRoot, DATA_DIR_NAME))
-	if err != nil {
-		return err
-	}
-	err = createDirIfNotExist(joinPath(client.ClientParams.documentRoot, META_DIR_NAME))
-	if err != nil {
-		return err
-	}
-
-	// Check if we already have a client that is intitilzed at this Document Root
-	err = client.getGlobalMetaStruct("globalClient.gob", &client)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	// By this point, either the existing client has been loaded to client var, or not.
-	// If client.isInitialized == true, then the existing client has been loaded.
-	if client.isInitialized {
-		clog.Warnf("Existing GoFileDb client found at %s. Loading it.", p.DocumentRoot)
-		// Ensure that the loaded params match the new params provided
-		// For now, the only param that matters is document root.
-		if client.documentRoot != p.DocumentRoot {
-			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client's documentRoot is set to %s. This is an unexpected error.", p.DocumentRoot, client.documentRoot)
-		}
-		if client.collections == nil {
-			return fmt.Errorf("An existing GoFileDb client has been found at the location %s. However, that client does not have an initialized collection data. This is an unexpected error.", p.DocumentRoot)
-		}
-
-		return nil
-	}
-
-	// Code here corresponds to the case when we're creating a new Client
-	// Initialize the CollectionStore
-	collections := new(collectionStore)             // collections is a pointer to collectionStore
-	collections.Store = make(map[string]Collection) // default case
-
-	// Initialize the collection store
-	// err = client.getGlobalMetaStruct("registered_collections.gob", &collections.Store)
-	// if err != nil && !os.IsNotExist(err) {
-	// 	return err
-	// }
-
-	client.collections = collections
-
-	client.isInitialized = true
-
-	globalClient = client
-
-	return SaveGlobalClientToDisk()
-}
-
-func SaveGlobalClientToDisk() error {
-	return (&globalClient).setGlobalMetaStruct("globalClient.gob", globalClient)
-}
-
 // GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
 func GetClient() *Client {
 	if !(&globalClient).isInitialized {
@@ -233,22 +136,21 @@ func (c *Client) getCollections() *collectionStore {
 	return c.collections
 }
 
-// func (c *Client) setCollections(cl *collectionStore) {
-// 	c.collections = cl
-// }
-func (c *Client) getCollectionByName(collectionName string) (*Collection, error) {
+func (c *Client) getCollectionByName(_collectionName string) (*collection.Collection, error) {
 	c.collections.RLock()
 	defer c.collections.RUnlock()
 
+	collectionName := strings.ToLower(_collectionName)
 	cl, hasKey := c.collections.Store[collectionName]
 	if !hasKey {
-		return nil, ErrCollectionIsNotExist
+		return nil, collection.ErrCollectionIsNotExist
 	}
 	return &cl, nil
 }
 
 func (c *Client) Destroy() error {
 	// remove everything related to this client, and refresh it
+	clog.Debugf("Destroying all the data at: %s", c.documentRoot)
 	err := os.RemoveAll(c.getDocumentRoot())
 	if err != nil {
 		return err
@@ -256,12 +158,18 @@ func (c *Client) Destroy() error {
 	c = &Client{}
 	return nil
 }
+
 func (c *Client) FlushAll() error {
 	return os.RemoveAll(c.documentRoot)
 }
 
-func (c *Client) setGlobalMetaStruct(metaName string, v interface{}) error {
-	file, err := os.Create(joinPath(c.getDocumentRoot(), META_DIR_NAME, metaName))
+func (c *Client) save() error {
+	return c.setMeta("globalClient.gob", globalClient)
+}
+
+func (c *Client) setMeta(metaName string, v interface{}) error {
+	clog.Debugf("Setting globalMetaStruct: %s", metaName)
+	file, err := os.Create(util.JoinPath(c.getDocumentRoot(), util.META_DIR_NAME, metaName))
 	if err != nil {
 		return err
 	}
@@ -274,8 +182,9 @@ func (c *Client) setGlobalMetaStruct(metaName string, v interface{}) error {
 	return nil
 }
 
-func (c *Client) getGlobalMetaStruct(metaName string, v interface{}) error {
-	file, err := os.Open(joinPath(c.getDocumentRoot(), META_DIR_NAME, metaName))
+func (c *Client) getMeta(metaName string, v interface{}) error {
+	clog.Debugf("Getting globalMetaStruct: %s", metaName)
+	file, err := os.Open(util.JoinPath(c.getDocumentRoot(), util.META_DIR_NAME, metaName))
 	if err != nil {
 		return err
 	}
@@ -291,19 +200,19 @@ func (c *Client) getGlobalMetaStruct(metaName string, v interface{}) error {
 * C L I E N T  <->  C O L L E C T I O N
 *********************************************************************************/
 
-func (c *Client) AddCollection(p CollectionProps) error {
+func (c *Client) AddCollection(p collection.CollectionProps) error {
 
 	// Sanitize the collection props
-	p = p.sanitize()
+	p = p.Sanitize()
 
 	// Validate the collection props
-	err := p.validate()
+	err := p.Validate()
 	if err != nil {
 		return err
 	}
 
 	// Create a Colelction and add to registered collections
-	var cl Collection
+	var cl collection.Collection
 	cl.CollectionProps = p
 
 	// Don't repeat collection names
@@ -311,29 +220,29 @@ func (c *Client) AddCollection(p CollectionProps) error {
 	_, hasKey := c.collections.Store[p.Name]
 	c.collections.RUnlock()
 	if hasKey {
-		return ErrCollectionIsExist
+		return collection.ErrCollectionIsExist
 	}
 
 	// Create the required dir paths for this collection
 	cl.DirPath = c.getDirPathForCollection(p.Name)
 
 	// create the dirs for the collection
-	err = createDirIfNotExist(joinPath(cl.DirPath, DATA_DIR_NAME))
+	err = util.CreateDirIfNotExist(util.JoinPath(cl.DirPath, util.DATA_DIR_NAME))
 	if err != nil {
 		return err
 	}
-	err = createDirIfNotExist(joinPath(cl.DirPath, META_DIR_NAME))
+	err = util.CreateDirIfNotExist(util.JoinPath(cl.DirPath, util.META_DIR_NAME))
 	if err != nil {
 		return err
 	}
 
-	err = createDirIfNotExist(cl.getIndexDirPath())
+	err = util.CreateDirIfNotExist(cl.GetDirPathForIndexes())
 	if err != nil {
 		return err
 	}
 
 	// Initialize the IndexStore, which stores info on the indexes associated with this Collection
-	cl.IndexStore.Store = make(map[string]IndexInfo)
+	cl.IndexStore.Store = make(map[string]collection.IndexInfo)
 
 	// Register the Collection
 
@@ -342,18 +251,12 @@ func (c *Client) AddCollection(p CollectionProps) error {
 
 	// Initialize the collection store if not initialized (but it should already be initialized because of the Initialize() function)
 	if c.collections.Store == nil {
-		c.collections.Store = make(map[string]Collection)
+		c.collections.Store = make(map[string]collection.Collection)
 	}
 	c.collections.Store[p.Name] = cl
 
-	// Save the data so it persists (might deprecate as we start storing the entire client)
-	err = c.setGlobalMetaStruct(REGISTER_COLLECTION_FILE_NAME, c.collections.Store)
-	if err != nil {
-		return err
-	}
-
 	// Save the client to disk
-	err = SaveGlobalClientToDisk()
+	err = c.save()
 	if err != nil {
 		return err
 	}
@@ -374,12 +277,6 @@ func (c *Client) RemoveCollection(collectionName string) error {
 	clog.Infof("Removing collection registration...")
 	delete(c.collections.Store, collectionName)
 
-	// Save the data so it persists (might deprecate as we start storing the entire client)
-	err = c.setGlobalMetaStruct("registered_collections.gob", c.collections.Store)
-	if err != nil {
-		return err
-	}
-
 	// Delete all the data & meta dirs for that collection
 	clog.Infof("Deleting data at %s...", cl.DirPath)
 	err = os.RemoveAll(cl.DirPath)
@@ -388,7 +285,7 @@ func (c *Client) RemoveCollection(collectionName string) error {
 	}
 
 	// Save the client to disk
-	err = SaveGlobalClientToDisk()
+	err = c.save()
 	if err != nil {
 		return err
 	}
@@ -402,7 +299,7 @@ func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 
 	_, err := c.getCollectionByName(collectionName)
 
-	if err == ErrCollectionIsNotExist {
+	if err == collection.ErrCollectionIsNotExist {
 		return false, nil
 	}
 	if err != nil {
@@ -416,60 +313,50 @@ func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 * W R I T E R S
 *********************************************************************************/
 
-func (c *Client) Set(collectionName string, k Key, data []byte) error {
+func (c *Client) Set(collectionName string, k key.Key, data []byte) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.set(k, data)
+	return cl.Set(k, data)
 }
 
-func (c *Client) SetStruct(collectionName string, k Key, v interface{}) error {
+func (c *Client) SetStruct(collectionName string, k key.Key, v interface{}) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.setFromStruct(k, v)
-}
-
-func (c *Client) SetFromReader(collectionName string, k Key, src io.Reader) error {
-
-	cl, err := c.getCollectionByName(collectionName)
-	if err != nil {
-		return err
-	}
-
-	return cl.setFromReader(k, src)
+	return cl.SetFromStruct(k, v)
 }
 
 /********************************************************************************
 * R E A D E R S
 *********************************************************************************/
 
-func (c *Client) GetFile(collectionName string, k Key) (*os.File, error) {
+func (c *Client) GetFile(collectionName string, k key.Key) (*os.File, error) {
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
 	}
 
-	return cl.getFile(k)
+	return cl.GetFile(k)
 }
 
-func (c *Client) Get(collectionName string, k Key) ([]byte, error) {
+func (c *Client) Get(collectionName string, k key.Key) ([]byte, error) {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
 	}
 
-	return cl.getFileData(k)
+	return cl.GetFileData(k)
 }
 
-func (c *Client) GetIfExist(collectionName string, k Key) ([]byte, error) {
+func (c *Client) GetIfExist(collectionName string, k key.Key) ([]byte, error) {
 
 	data, err := c.Get(collectionName, k)
 	if os.IsNotExist(err) { // if doesn't exist, return nil
@@ -478,17 +365,17 @@ func (c *Client) GetIfExist(collectionName string, k Key) ([]byte, error) {
 	return data, err
 }
 
-func (c *Client) GetStruct(collectionName string, k Key, dest interface{}) error {
+func (c *Client) GetStruct(collectionName string, k key.Key, dest interface{}) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.getIntoStruct(k, dest)
+	return cl.GetIntoStruct(k, dest)
 }
 
-func (c *Client) GetStructIfExists(collectionName string, k Key, dest interface{}) (bool, error) {
+func (c *Client) GetStructIfExists(collectionName string, k key.Key, dest interface{}) (bool, error) {
 
 	err := c.GetStruct(collectionName, k, dest)
 	if os.IsNotExist(err) {
@@ -497,18 +384,27 @@ func (c *Client) GetStructIfExists(collectionName string, k Key, dest interface{
 	return true, err
 }
 
-func (c *Client) GetIntoWriter(collectionName string, k Key, dest io.Writer) error {
+func (c *Client) GetIntoWriter(collectionName string, k key.Key, dest io.Writer) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
-	return cl.getIntoWriter(k, dest)
+	return cl.GetIntoWriter(k, dest)
 }
 
 /********************************************************************************
 * Q U E R Y (B E T A)
 *********************************************************************************/
+
+type SearchResponse struct {
+	Collection   string
+	Query        string
+	Error        error
+	TimeTaken    time.Duration
+	NumDocuments int
+	Result       []interface{}
+}
 
 func (c *Client) Search(collectionName string, query string) (SearchResponse, error) {
 
@@ -528,7 +424,7 @@ func (c *Client) Search(collectionName string, query string) (SearchResponse, er
 		return resp, err
 	}
 
-	resp.Result, err = cl.search(query)
+	resp.Result, err = cl.Search(query)
 	if err != nil {
 		resp.Error = err
 		return resp, err
@@ -547,13 +443,13 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 		return err
 	}
 
-	err = cl.addIndex(fieldLocator)
+	err = cl.AddIndex(fieldLocator)
 	if err != nil {
 		return err
 	}
 
 	// Save the client to disk
-	return SaveGlobalClientToDisk()
+	return c.save()
 
 }
 
@@ -562,6 +458,6 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 *********************************************************************************/
 
 func (c *Client) getDirPathForCollection(collectionName string) string {
-	dirs := []string{c.documentRoot, DATA_DIR_NAME, collectionName}
+	dirs := []string{c.documentRoot, util.DATA_DIR_NAME, collectionName}
 	return strings.Join(dirs, string(os.PathSeparator))
 }

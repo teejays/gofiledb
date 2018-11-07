@@ -1,4 +1,4 @@
-package gofiledb
+package util
 
 import (
 	"fmt"

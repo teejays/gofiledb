@@ -9,7 +9,6 @@ import (
 	"github.com/teejays/gofiledb/key"
 	"github.com/teejays/gofiledb/util"
 	"io"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -119,7 +118,7 @@ func (p *ClientParams) GobDecode(b []byte) error {
 // GetClient returns the current instance of the client for the application. It panics if the client has not been initialized.
 func GetClient() *Client {
 	if !(&globalClient).isInitialized {
-		log.Panic("GoFiledb client fetched called without initializing the client")
+		panic("GoFiledb client fetched called without initializing the client")
 	}
 	return &globalClient
 }
@@ -168,7 +167,7 @@ func (c *Client) save() error {
 }
 
 func (c *Client) setMeta(metaName string, v interface{}) error {
-	clog.Debugf("Setting globalMetaStruct: %s", metaName)
+	clog.Debugf("Saving client meta: %s", metaName)
 	file, err := os.Create(util.JoinPath(c.getDocumentRoot(), util.META_DIR_NAME, metaName))
 	if err != nil {
 		return err
@@ -183,7 +182,7 @@ func (c *Client) setMeta(metaName string, v interface{}) error {
 }
 
 func (c *Client) getMeta(metaName string, v interface{}) error {
-	clog.Debugf("Getting globalMetaStruct: %s", metaName)
+	clog.Debugf("Getting client meta: %s", metaName)
 	file, err := os.Open(util.JoinPath(c.getDocumentRoot(), util.META_DIR_NAME, metaName))
 	if err != nil {
 		return err
@@ -315,50 +314,50 @@ func (c *Client) IsCollectionExist(collectionName string) (bool, error) {
 * W R I T E R S
 *********************************************************************************/
 
-func (c *Client) Set(collectionName string, k key.Key, data []byte) error {
+func (c *Client) Set(collectionName string, k Key, data []byte) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.Set(k, data)
+	return cl.Set(key.Key(k), data)
 }
 
-func (c *Client) SetStruct(collectionName string, k key.Key, v interface{}) error {
+func (c *Client) SetStruct(collectionName string, k Key, v interface{}) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.SetFromStruct(k, v)
+	return cl.SetFromStruct(key.Key(k), v)
 }
 
 /********************************************************************************
 * R E A D E R S
 *********************************************************************************/
 
-func (c *Client) GetFile(collectionName string, k key.Key) (*os.File, error) {
+func (c *Client) GetFile(collectionName string, k Key) (*os.File, error) {
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
 	}
 
-	return cl.GetFile(k)
+	return cl.GetFile(key.Key(k))
 }
 
-func (c *Client) Get(collectionName string, k key.Key) ([]byte, error) {
+func (c *Client) Get(collectionName string, k Key) ([]byte, error) {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return nil, err
 	}
 
-	return cl.GetFileData(k)
+	return cl.GetFileData(key.Key(k))
 }
 
-func (c *Client) GetIfExist(collectionName string, k key.Key) ([]byte, error) {
+func (c *Client) GetIfExist(collectionName string, k Key) ([]byte, error) {
 
 	data, err := c.Get(collectionName, k)
 	if os.IsNotExist(err) { // if doesn't exist, return nil
@@ -367,17 +366,17 @@ func (c *Client) GetIfExist(collectionName string, k key.Key) ([]byte, error) {
 	return data, err
 }
 
-func (c *Client) GetStruct(collectionName string, k key.Key, dest interface{}) error {
+func (c *Client) GetStruct(collectionName string, k Key, dest interface{}) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
 
-	return cl.GetIntoStruct(k, dest)
+	return cl.GetIntoStruct(key.Key(k), dest)
 }
 
-func (c *Client) GetStructIfExists(collectionName string, k key.Key, dest interface{}) (bool, error) {
+func (c *Client) GetStructIfExists(collectionName string, k Key, dest interface{}) (bool, error) {
 
 	err := c.GetStruct(collectionName, k, dest)
 	if os.IsNotExist(err) {
@@ -386,13 +385,13 @@ func (c *Client) GetStructIfExists(collectionName string, k key.Key, dest interf
 	return true, err
 }
 
-func (c *Client) GetIntoWriter(collectionName string, k key.Key, dest io.Writer) error {
+func (c *Client) GetIntoWriter(collectionName string, k Key, dest io.Writer) error {
 
 	cl, err := c.getCollectionByName(collectionName)
 	if err != nil {
 		return err
 	}
-	return cl.GetIntoWriter(k, dest)
+	return cl.GetIntoWriter(key.Key(k), dest)
 }
 
 /********************************************************************************

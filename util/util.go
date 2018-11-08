@@ -24,7 +24,7 @@ func JoinPath(dirs ...string) string {
 
 func CreateDirIfNotExist(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		clog.Infof("[GoFileDB] Creating dir at: %s", path)
+		clog.Debugf("[GoFileDB] Creating dir at: %s", path)
 		err := os.MkdirAll(path, DIR_PERM)
 		if err != nil {
 			return nil

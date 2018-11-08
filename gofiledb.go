@@ -25,6 +25,7 @@ const (
 
 var ErrCollectionIsNotExist = collection.ErrCollectionIsNotExist
 var ErrCollectionIsExist = collection.ErrCollectionIsExist
+var ErrIndexNotImplemented = collection.ErrIndexNotImplemented
 
 // Initialize setsup the package for use by an appliction. This should be called before the client can be used.
 func Initialize(p ClientInitOptions) error {

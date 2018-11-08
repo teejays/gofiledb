@@ -10,6 +10,6 @@ import (
 
 type Key key.Key
 
-func NewKey(i int64) key.Key {
-	return key.Key(i)
+func NewKey(i int64) Key {
+	return Key(i)
 }

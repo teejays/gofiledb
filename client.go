@@ -156,7 +156,7 @@ func (c *Client) Destroy() error {
 	if err != nil {
 		return err
 	}
-	c = &Client{}
+	globalClient = Client{}
 	return nil
 }
 

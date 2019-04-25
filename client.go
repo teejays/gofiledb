@@ -526,7 +526,8 @@ func (c *Client) SaveNewEntity(collection string, entity interface{}) (Key, erro
 	}
 	// - get the reflect.Value of the ID
 	vID := reflect.ValueOf(id)
-	fv.Set(vID)
+	// conver the vID to type of fv
+	vID.Convert(fv.Type())
 
 	// Save the new entity
 	entity = v.Interface()

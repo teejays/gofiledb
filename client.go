@@ -9,7 +9,9 @@ import (
 	"github.com/teejays/gofiledb/key"
 	"github.com/teejays/gofiledb/util"
 	"io"
+	"math/rand"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -461,4 +463,78 @@ func (c *Client) AddIndex(collectionName string, fieldLocator string) error {
 func (c *Client) getDirPathForCollection(collectionName string) string {
 	dirs := []string{c.documentRoot, util.DATA_DIR_NAME, collectionName}
 	return strings.Join(dirs, string(os.PathSeparator))
+}
+
+/********************************************************************************
+* E N T I T Y  C R E A T O R S
+*********************************************************************************/
+
+// GetNewEntityID generates a unique pk.ID for the given collection
+func (c *Client) GetNewEntityID(collection string) (Key, error) {
+
+	// Get an random ID
+	id := getNewID()
+
+	// Check if it already exists
+	_, err := c.GetFile(collection, Key(id))
+	if IsNotExist(err) { // If the file doesn't exist, we're good to go
+		return id, nil
+	}
+	if err != nil {
+		return id, fmt.Errorf("generated the new id %d but could not verify that it is unique: %v", id, err)
+	}
+
+	return c.GetNewEntityID(collection)
+}
+
+// getNewID generates a new unique ID for an entity
+func getNewID() Key {
+	minID := 100000
+	rng := 100000
+	seed := time.Now().UnixNano()
+	src := rand.NewSource(seed)
+	r := rand.New(src)
+	id := r.Intn(rng)
+	return Key(int(id) + minID)
+}
+
+// SaveNewEntity saves a new enity
+func (c *Client) SaveNewEntity(collection string, entity interface{}) (Key, error) {
+
+	// Get a new ID
+	id, err := c.GetNewEntityID(collection)
+	if err != nil {
+		return id, err
+	}
+
+	// TODO(teejays): Implement a lock on the collection
+
+	// Add the ID to the entity using reflect package
+
+	// - get the reflect.Value of the entity
+	v := reflect.ValueOf(entity)
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return -1, fmt.Errorf("Cannot set the value of the ID (%d) of the new %s entity: entity is not a struct", id, collection)
+	}
+	fv := v.FieldByName("ID")
+	if !fv.IsValid() {
+		return -1, fmt.Errorf("Cannot set the value of the ID (%d) of the new %s entity: field value is not valid", id, collection)
+	}
+	if !fv.CanSet() {
+		return -1, fmt.Errorf("Cannot set the value of the ID (%d) of the new %s entity: cannot set the field value", id, collection)
+	}
+	// - get the reflect.Value of the ID
+	vID := reflect.ValueOf(id)
+	fv.Set(vID)
+
+	// Save the new entity
+	entity = v.Interface()
+	cl := GetClient()
+	err = cl.SetStruct(collection, Key(id), entity)
+	if err != nil {
+		return id, err
+	}
+
+	return id, nil
 }

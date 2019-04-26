@@ -531,6 +531,7 @@ func (c *Client) SaveNewEntity(collection string, entity interface{}) (Key, erro
 
 	// Save the new entity
 	entity = v.Interface()
+	clog.Debugf("[gofiledb] Saving the new entity: %v", entity)
 	cl := GetClient()
 	err = cl.SetStruct(collection, Key(id), entity)
 	if err != nil {

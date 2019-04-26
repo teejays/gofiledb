@@ -527,7 +527,7 @@ func (c *Client) SaveNewEntity(collection string, entity interface{}) (Key, erro
 	// - get the reflect.Value of the ID
 	vID := reflect.ValueOf(id)
 	// conver the vID to type of fv
-	vID.Convert(fv.Type())
+	vID = vID.Convert(fv.Type())
 	clog.Debugf("[gofiledb] SaveNewEntity: id converted to %v with value %v", fv.Type(), vID)
 	fv.Set(vID)
 	
